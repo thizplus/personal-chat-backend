@@ -17,8 +17,6 @@ type messageService struct {
 	messageReadRepo     repository.MessageReadRepository
 	conversationRepo    repository.ConversationRepository
 	userRepo            repository.UserRepository
-	businessAccountRepo repository.BusinessAccountRepository
-	businessAdminRepo   repository.BusinessAdminRepository
 }
 
 // NewMessageService สร้าง instance ใหม่ของ MessageService
@@ -27,8 +25,6 @@ func NewMessageService(
 	messageReadRepo repository.MessageReadRepository,
 	conversationRepo repository.ConversationRepository,
 	userRepo repository.UserRepository,
-	businessAccountRepo repository.BusinessAccountRepository,
-	businessAdminRepo repository.BusinessAdminRepository,
 
 ) service.MessageService {
 	return &messageService{

@@ -18,29 +18,20 @@ import (
 type conversationService struct {
 	conversationRepo    repository.ConversationRepository
 	userRepo            repository.UserRepository
-	businessRepo        repository.BusinessAccountRepository
 	messageRepo         repository.MessageRepository
-	businessAdminRepo   repository.BusinessAdminRepository
-	customerProfileRepo repository.CustomerProfileRepository
 }
 
 // NewConversationService สร้าง service ใหม่
 func NewConversationService(
 	conversationRepo repository.ConversationRepository,
 	userRepo repository.UserRepository,
-	businessRepo repository.BusinessAccountRepository,
 	messageRepo repository.MessageRepository,
-	businessAdminRepo repository.BusinessAdminRepository,
-	customerProfileRepo repository.CustomerProfileRepository,
 
 ) service.ConversationService {
 	return &conversationService{
 		conversationRepo:    conversationRepo,
 		userRepo:            userRepo,
-		businessRepo:        businessRepo,
 		messageRepo:         messageRepo,
-		businessAdminRepo:   businessAdminRepo,
-		customerProfileRepo: customerProfileRepo,
 	}
 }
 
@@ -141,15 +132,12 @@ func (s *conversationService) GetUserConversations(userID uuid.UUID, limit, offs
 		return nil, 0, err
 	}
 
-	// แปลงเป็น DTOs และกรอง business conversations ที่ user เป็นแอดมิน
 	dtos := make([]*dto.ConversationDTO, 0, len(conversations))
 	filteredCount := 0 // นับจำนวนที่ถูกกรอง
 
 	for _, conversation := range conversations {
 		dto, err := s.convertToConversationDTO(conversation, userID)
 		if err != nil {
-			// ถ้าเป็น error จากการกรอง business conversation ให้ข้าม
-			if err.Error() == "business conversation filtered for admin user" {
 				filteredCount++
 				continue
 			}
@@ -172,14 +160,6 @@ func (s *conversationService) convertToConversationDTO(conversation *models.Conv
 		return nil, errors.New("conversation is nil")
 	}
 
-	// ⚠️ สำคัญ: กรอง business conversation ที่ user เป็นแอดมิน
-	if conversation.Type == "business" && conversation.BusinessID != nil {
-		// ตรวจสอบว่า user เป็นแอดมินของธุรกิจนี้หรือไม่
-		isBusinessAdmin, err := s.businessAdminRepo.CheckAdminPermission(userID, *conversation.BusinessID, []string{})
-		if err == nil && isBusinessAdmin {
-			// ถ้าเป็นแอดมินของธุรกิจ = ไม่แสดงใน personal conversations
-			return nil, errors.New("business conversation filtered for admin user")
-		}
 	}
 
 	convDTO := &dto.ConversationDTO{
@@ -192,7 +172,6 @@ func (s *conversationService) convertToConversationDTO(conversation *models.Conv
 		LastMessageText: conversation.LastMessageText,
 		LastMessageAt:   conversation.LastMessageAt,
 		CreatorID:       conversation.CreatorID,
-		BusinessID:      conversation.BusinessID,
 		IsActive:        conversation.IsActive,
 		Metadata:        conversation.Metadata,
 	}
@@ -235,24 +214,11 @@ func (s *conversationService) convertToConversationDTO(conversation *models.Conv
 				}
 			}
 		}
-	} else if conversation.Type == "business" && conversation.BusinessID != nil {
-		// เฉพาะกรณีที่ไม่ใช่แอดมิน (ผ่านการกรองข้างต้นแล้ว)
-		business, err := s.businessRepo.GetByID(*conversation.BusinessID)
-		if err == nil && business != nil {
-			if convDTO.Title == "" {
-				convDTO.Title = business.Name
-			}
 
 			if convDTO.IconURL == "" {
-				convDTO.IconURL = business.ProfileImageURL
 			}
 
-			businessInfo := types.JSONB{
-				"id":                business.ID.String(),
-				"name":              business.Name,
-				"profile_image_url": business.ProfileImageURL,
 			}
-			convDTO.BusinessInfo = businessInfo
 		}
 	}
 
@@ -332,160 +298,13 @@ func (s *conversationService) userExists(userID uuid.UUID) (bool, error) {
 
 // CreateBusinessConversation สร้างการสนทนากับธุรกิจ
 
-func (s *conversationService) CreateBusinessConversation(userID, businessID uuid.UUID) (*dto.ConversationDTO, error) {
-	// ตรวจสอบว่าธุรกิจมีอยู่จริง
-	business, err := s.businessRepo.GetByID(businessID)
-	if err != nil {
-		return nil, err
-	}
 
-	if business == nil {
-		return nil, errors.New("business not found")
-	}
-
-	// 🆕 สร้าง Customer Profile อัตโนมัติ (ถ้ายังไม่มี)
-	err = s.ensureCustomerProfile(businessID, userID)
-	if err != nil {
-		// Log error แต่ไม่ให้ fail การสร้าง conversation
-		// เพราะ customer profile ไม่ใช่ส่วนที่จำเป็นต่อการทำงานของ conversation
-		fmt.Printf("Warning: Failed to create customer profile for user %s in business %s: %v\n",
-			userID.String(), businessID.String(), err)
-	}
-
-	// สร้างการสนทนาใหม่
-	now := time.Now()
-	conversation := &models.Conversation{
-		ID:         uuid.New(),
-		Type:       "business",
-		CreatedAt:  now,
-		UpdatedAt:  now,
-		CreatorID:  &userID,
-		BusinessID: &businessID,
-		IsActive:   true,
-	}
-
-	if err := s.conversationRepo.Create(conversation); err != nil {
-		return nil, err
-	}
-
-	// เพิ่มผู้สร้างเป็นสมาชิก
-	creator := &models.ConversationMember{
-		ID:             uuid.New(),
-		ConversationID: conversation.ID,
-		UserID:         userID,
-		IsAdmin:        false,
-		JoinedAt:       now,
-	}
-	if err := s.conversationRepo.AddMember(creator); err != nil {
-		return nil, err
-	}
-
-	// รวบรวม member IDs ทั้งหมดสำหรับ WebSocket notification
-	allMemberIDs := []uuid.UUID{userID}
-
-	// ดึงข้อมูลเจ้าของธุรกิจและเพิ่มเป็นสมาชิก
-	if business.OwnerID != nil {
-		ownerID := *business.OwnerID
-		if ownerID != userID {
-			owner := &models.ConversationMember{
-				ID:             uuid.New(),
-				ConversationID: conversation.ID,
-				UserID:         ownerID,
-				IsAdmin:        true,
-				JoinedAt:       now,
-			}
-			if err := s.conversationRepo.AddMember(owner); err == nil {
-				allMemberIDs = append(allMemberIDs, ownerID)
-			}
-		}
-	}
-
-	// สร้างข้อความระบบ
-	/*
-		welcomeMessageText := "Welcome to our business chat! How can we help you today?"
-		if business.WelcomeMessage != "" {
-			welcomeMessageText = business.WelcomeMessage
-		}
-		s.createSystemMessage(conversation.ID, welcomeMessageText)
-	*/
-
-	// ดึงข้อมูลการสนทนาที่สร้างเสร็จแล้ว
-	createdConv, err := s.conversationRepo.GetByID(conversation.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	// แปลงเป็น DTO
-	convDTO, err := s.convertToConversationDTO(createdConv, userID)
-	if err != nil {
-		return nil, err
-	}
-
-	// เพิ่มข้อมูลเพิ่มเติม
-	convDTO.MemberCount = len(allMemberIDs)
-	convDTO.IsPinned = false
-	convDTO.IsMuted = false
-	convDTO.UnreadCount = 0
-
-	return convDTO, nil
-}
-
-// แก้ไขเมธอด ensureCustomerProfile ในไฟล์ application/serviceimpl/conversation_service.go
-
-// 🆕 Helper method สำหรับสร้าง Customer Profile
-func (s *conversationService) ensureCustomerProfile(businessID, userID uuid.UUID) error {
-	// ตรวจสอบว่ามี customer profile อยู่แล้วหรือไม่
-	_, err := s.customerProfileRepo.GetByBusinessAndUser(businessID, userID)
-	if err == nil {
-		// มีอยู่แล้ว ไม่ต้องทำอะไร
-		return nil
-	}
-
-	// ดึงข้อมูล user เพื่อใช้สร้าง profile
-	user, err := s.userRepo.FindByID(userID)
-	if err != nil {
-		return fmt.Errorf("failed to get user info: %w", err)
-	}
-
-	// สร้าง customer profile ใหม่
-	now := time.Now()
-	profile := &models.CustomerProfile{
-		ID:         uuid.New(),
-		BusinessID: businessID,
-		UserID:     userID,
-		Nickname:   "", // เริ่มต้นว่าง admin จะตั้งชื่อเล่นทีหลัง
-		//Notes:        "Auto-created when customer started conversation",
-		Notes:        "",
-		CustomerType: "New",    // ประเภทลูกค้าเริ่มต้น (ตาม model: VIP, Regular, New, etc.)
-		Status:       "active", // สถานะเริ่มต้น
-		Metadata: types.JSONB{
-			"source":       "conversation",
-			"display_name": user.DisplayName,
-			"username":     user.Username,
-			"auto_created": true,
-			"created_via":  "business_conversation",
-		},
-		CreatedAt:     now,
-		UpdatedAt:     now,
-		LastContactAt: &now, // pointer to time.Time บันทึกเวลาติดต่อครั้งแรก
-		CreatedByID:   nil,  // system created, no admin
-	}
-
-	// บันทึก customer profile
-	err = s.customerProfileRepo.Create(profile)
-	if err != nil {
-		return fmt.Errorf("failed to create customer profile: %w", err)
-	}
-
-	return nil
-}
 
 // 🔧 ต้องเพิ่ม repositories ใน conversationService struct
 // type conversationService struct {
 // 	conversationRepo     repository.ConversationRepository
 // 	businessRepo         repository.BusinessRepository
 // 	userRepo             repository.UserRepository
-// 	customerProfileRepo  repository.CustomerProfileRepository  // 🆕 เพิ่มบรรทัดนี้
 // 	// ... repositories อื่นๆ
 // }
 
@@ -701,7 +520,6 @@ func (s *conversationService) ConvertToMessageDTO(msg *models.Message, userID uu
 		IsEdited:          msg.IsEdited,
 		EditCount:         msg.EditCount,
 		ReplyToID:         msg.ReplyToID,
-		BusinessID:        msg.BusinessID,
 		ReadCount:         0,     // ค่าเริ่มต้น จะอัปเดตทีหลัง
 		IsRead:            false, // ค่าเริ่มต้น จะอัปเดตทีหลัง
 	}
@@ -726,12 +544,9 @@ func (s *conversationService) addSenderInfoToDTO(msgDTO *dto.MessageDTO) {
 		return
 	}
 
-	if msgDTO.SenderType == "business" && msgDTO.BusinessID != nil {
 		// ดึงข้อมูลธุรกิจ
 		business, err := s.businessRepo.GetByID(*msgDTO.BusinessID)
 		if err == nil && business != nil {
-			msgDTO.SenderName = business.Name
-			msgDTO.SenderAvatar = business.ProfileImageURL
 		}
 	} else {
 		// ดึงข้อมูลผู้ใช้
@@ -789,10 +604,8 @@ func (s *conversationService) addReplyToInfoToDTO(msgDTO *dto.MessageDTO) {
 
 	// เพิ่มข้อมูลผู้ส่งของข้อความที่ตอบกลับ
 	if replyMsg.SenderID != nil {
-		if replyMsg.SenderType == "business" && replyMsg.BusinessID != nil {
 			business, err := s.businessRepo.GetByID(*replyMsg.BusinessID)
 			if err == nil && business != nil {
-				replyInfo.SenderName = business.Name
 			}
 		} else {
 			user, err := s.userRepo.FindByID(*replyMsg.SenderID) // แก้ไขตรงนี้: เพิ่ม * เพื่อดึงค่าจาก pointer
@@ -1117,526 +930,34 @@ func (s *conversationService) UpdateConversation(id uuid.UUID, updateData types.
 // เพิ่มเมธอดเหล่านี้ใน conversationService struct ที่มีอยู่แล้ว
 
 // ========================================
-// 🏢 BUSINESS CONVERSATION SERVICE IMPLEMENTATIONS
 // ========================================
 
 // GetBusinessConversations ดึงการสนทนาทั้งหมดของธุรกิจ
-func (s *conversationService) GetBusinessConversations(businessID uuid.UUID, adminID uuid.UUID, limit, offset int) ([]*dto.ConversationDTO, int, error) {
-	// ดึงการสนทนาทั้งหมดของธุรกิจจาก repository
-	conversations, total, err := s.conversationRepo.GetBusinessConversations(businessID, limit, offset)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	// แปลงเป็น DTOs
-	dtos := make([]*dto.ConversationDTO, 0, len(conversations))
-	for _, conversation := range conversations {
-		// ใช้ฟังก์ชันเดิมในการแปลง แต่ส่ง businessID เพื่อ context
-		dto, err := s.convertToBusinessConversationDTO(conversation, businessID, adminID)
-		if err != nil {
-			// ข้ามการสนทนาที่มีปัญหา
-			continue
-		}
-		dtos = append(dtos, dto)
-	}
-
-	return dtos, total, nil
-}
 
 // GetBusinessConversationsBeforeTime ดึงการสนทนาธุรกิจที่เก่ากว่าเวลาที่ระบุ
-func (s *conversationService) GetBusinessConversationsBeforeTime(businessID uuid.UUID, adminID uuid.UUID, beforeTime string, limit int) ([]*dto.ConversationDTO, int, error) {
-	// แปลง string เป็น time.Time
-	parsedTime, err := time.Parse(time.RFC3339, beforeTime)
-	if err != nil {
-		return nil, 0, fmt.Errorf("invalid time format: %w", err)
-	}
-
-	// เรียกใช้ repository
-	conversations, total, err := s.conversationRepo.GetBusinessConversationsBeforeTime(businessID, parsedTime, limit)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	// แปลงเป็น DTOs
-	dtos := make([]*dto.ConversationDTO, 0, len(conversations))
-	for _, conversation := range conversations {
-		dto, err := s.convertToBusinessConversationDTO(conversation, businessID, adminID)
-		if err != nil {
-			continue
-		}
-		dtos = append(dtos, dto)
-	}
-
-	return dtos, total, nil
-}
 
 // GetBusinessConversationsAfterTime ดึงการสนทนาธุรกิจที่ใหม่กว่าเวลาที่ระบุ
-func (s *conversationService) GetBusinessConversationsAfterTime(businessID uuid.UUID, adminID uuid.UUID, afterTime string, limit int) ([]*dto.ConversationDTO, int, error) {
-	// แปลง string เป็น time.Time
-	parsedTime, err := time.Parse(time.RFC3339, afterTime)
-	if err != nil {
-		return nil, 0, fmt.Errorf("invalid time format: %w", err)
-	}
-
-	// เรียกใช้ repository
-	conversations, total, err := s.conversationRepo.GetBusinessConversationsAfterTime(businessID, parsedTime, limit)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	// แปลงเป็น DTOs
-	dtos := make([]*dto.ConversationDTO, 0, len(conversations))
-	for _, conversation := range conversations {
-		dto, err := s.convertToBusinessConversationDTO(conversation, businessID, adminID)
-		if err != nil {
-			continue
-		}
-		dtos = append(dtos, dto)
-	}
-
-	return dtos, total, nil
-}
 
 // GetBusinessConversationsBeforeID ดึงการสนทนาธุรกิจที่เก่ากว่า ID ที่ระบุ
-func (s *conversationService) GetBusinessConversationsBeforeID(businessID uuid.UUID, adminID uuid.UUID, beforeID uuid.UUID, limit int) ([]*dto.ConversationDTO, int, error) {
-	// เรียกใช้ repository
-	conversations, total, err := s.conversationRepo.GetBusinessConversationsBeforeID(businessID, beforeID, limit)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	// แปลงเป็น DTOs
-	dtos := make([]*dto.ConversationDTO, 0, len(conversations))
-	for _, conversation := range conversations {
-		dto, err := s.convertToBusinessConversationDTO(conversation, businessID, adminID)
-		if err != nil {
-			continue
-		}
-		dtos = append(dtos, dto)
-	}
-
-	return dtos, total, nil
-}
 
 // GetBusinessConversationsAfterID ดึงการสนทนาธุรกิจที่ใหม่กว่า ID ที่ระบุ
-func (s *conversationService) GetBusinessConversationsAfterID(businessID uuid.UUID, adminID uuid.UUID, afterID uuid.UUID, limit int) ([]*dto.ConversationDTO, int, error) {
-	// เรียกใช้ repository
-	conversations, total, err := s.conversationRepo.GetBusinessConversationsAfterID(businessID, afterID, limit)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	// แปลงเป็น DTOs
-	dtos := make([]*dto.ConversationDTO, 0, len(conversations))
-	for _, conversation := range conversations {
-		dto, err := s.convertToBusinessConversationDTO(conversation, businessID, adminID)
-		if err != nil {
-			continue
-		}
-		dtos = append(dtos, dto)
-	}
-
-	return dtos, total, nil
-}
 
 // GetBusinessConversationMessages ดึงข้อความในการสนทนาธุรกิจ
-func (s *conversationService) GetBusinessConversationMessages(conversationID, businessID uuid.UUID, limit, offset int) ([]*dto.MessageDTO, int64, error) {
-	// ตรวจสอบว่าการสนทนาเป็นของธุรกิจ
-	belongsToBusiness, err := s.conversationRepo.CheckConversationBelongsToBusiness(conversationID, businessID)
-	if err != nil {
-		return nil, 0, err
-	}
-	if !belongsToBusiness {
-		return nil, 0, errors.New("this conversation does not belong to your business")
-	}
-
-	// ดึงข้อความทั้งหมดในการสนทนา (ใช้ฟังก์ชันเดิม)
-	messages, total, err := s.messageRepo.GetMessagesByConversationID(conversationID, limit, offset)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	// แปลงข้อความเป็น DTOs
-	messageDTOs := make([]*dto.MessageDTO, 0, len(messages))
-	for _, msg := range messages {
-		// ใช้ฟังก์ชันเดิมในการแปลง แต่ส่ง businessID เพื่อ context
-		messageDTO, err := s.ConvertToBusinessMessageDTO(msg, businessID)
-		if err != nil {
-			// ข้ามข้อความที่มีปัญหา
-			continue
-		}
-		messageDTOs = append(messageDTOs, messageDTO)
-	}
-
-	return messageDTOs, total, nil
-}
 
 // GetBusinessMessageContext ดึงข้อความเป้าหมายพร้อมบริบทสำหรับธุรกิจ
-func (s *conversationService) GetBusinessMessageContext(conversationID, businessID uuid.UUID, targetID string, beforeCount, afterCount int) ([]*dto.MessageDTO, bool, bool, error) {
-	// แปลง targetID เป็น uuid
-	targetUUID, err := uuid.Parse(targetID)
-	if err != nil {
-		return nil, false, false, fmt.Errorf("invalid target message ID: %w", err)
-	}
-
-	// ตรวจสอบว่าการสนทนาเป็นของธุรกิจ
-	belongsToBusiness, err := s.conversationRepo.CheckConversationBelongsToBusiness(conversationID, businessID)
-	if err != nil {
-		return nil, false, false, err
-	}
-	if !belongsToBusiness {
-		return nil, false, false, errors.New("this conversation does not belong to your business")
-	}
-
-	// ตรวจสอบว่ามีข้อความเป้าหมายจริงหรือไม่
-	targetMsg, err := s.messageRepo.GetByID(targetUUID)
-	if err != nil {
-		return nil, false, false, fmt.Errorf("error fetching target message: %w", err)
-	}
-	if targetMsg == nil {
-		return nil, false, false, errors.New("target message not found")
-	}
-	if targetMsg.ConversationID != conversationID {
-		return nil, false, false, errors.New("target message does not belong to this conversation")
-	}
-
-	// ดึงข้อความก่อนหน้าเป้าหมาย
-	beforeMessages, err := s.messageRepo.GetMessagesBefore(conversationID, targetUUID, beforeCount+1)
-	if err != nil {
-		return nil, false, false, fmt.Errorf("error fetching messages before target: %w", err)
-	}
-	hasMoreBefore := len(beforeMessages) > beforeCount
-	if hasMoreBefore {
-		beforeMessages = beforeMessages[:beforeCount]
-	}
-
-	// ดึงข้อความหลังเป้าหมาย
-	afterMessages, err := s.messageRepo.GetMessagesAfter(conversationID, targetUUID, afterCount+1)
-	if err != nil {
-		return nil, false, false, fmt.Errorf("error fetching messages after target: %w", err)
-	}
-	hasMoreAfter := len(afterMessages) > afterCount
-	if hasMoreAfter {
-		afterMessages = afterMessages[:afterCount]
-	}
-
-	// รวมข้อความทั้งหมดและจัดเรียง
-	allMessages := make([]*models.Message, 0, len(beforeMessages)+1+len(afterMessages))
-	allMessages = append(allMessages, beforeMessages...)
-	allMessages = append(allMessages, targetMsg)
-	allMessages = append(allMessages, afterMessages...)
-
-	// จัดเรียงข้อความตามเวลา
-	sort.Slice(allMessages, func(i, j int) bool {
-		return allMessages[i].CreatedAt.Before(allMessages[j].CreatedAt)
-	})
-
-	// แปลงเป็น DTOs
-	messageDTOs := make([]*dto.MessageDTO, 0, len(allMessages))
-	for _, msg := range allMessages {
-		messageDTO, err := s.ConvertToBusinessMessageDTO(msg, businessID)
-		if err != nil {
-			continue
-		}
-		messageDTOs = append(messageDTOs, messageDTO)
-	}
-
-	return messageDTOs, hasMoreBefore, hasMoreAfter, nil
-}
 
 // GetBusinessMessagesBeforeID ดึงข้อความธุรกิจที่เก่ากว่า ID ที่ระบุ
-func (s *conversationService) GetBusinessMessagesBeforeID(conversationID, businessID uuid.UUID, beforeID string, limit int) ([]*dto.MessageDTO, int64, error) {
-	// แปลง beforeID เป็น uuid
-	beforeUUID, err := uuid.Parse(beforeID)
-	if err != nil {
-		return nil, 0, fmt.Errorf("invalid before message ID: %w", err)
-	}
-
-	// ตรวจสอบว่าการสนทนาเป็นของธุรกิจ
-	belongsToBusiness, err := s.conversationRepo.CheckConversationBelongsToBusiness(conversationID, businessID)
-	if err != nil {
-		return nil, 0, err
-	}
-	if !belongsToBusiness {
-		return nil, 0, errors.New("this conversation does not belong to your business")
-	}
-
-	// ดึงข้อความที่เก่ากว่า ID ที่ระบุ
-	messages, err := s.messageRepo.GetMessagesBefore(conversationID, beforeUUID, limit)
-	if err != nil {
-		return nil, 0, fmt.Errorf("error fetching messages before ID: %w", err)
-	}
-
-	// ดึงจำนวนข้อความทั้งหมด
-	total, err := s.messageRepo.CountAllMessages(conversationID)
-	if err != nil {
-		total = int64(len(messages))
-	}
-
-	// แปลงเป็น DTOs
-	messageDTOs := make([]*dto.MessageDTO, 0, len(messages))
-	for _, msg := range messages {
-		messageDTO, err := s.ConvertToBusinessMessageDTO(msg, businessID)
-		if err != nil {
-			continue
-		}
-		messageDTOs = append(messageDTOs, messageDTO)
-	}
-
-	return messageDTOs, total, nil
-}
 
 // GetBusinessMessagesAfterID ดึงข้อความธุรกิจที่ใหม่กว่า ID ที่ระบุ
-func (s *conversationService) GetBusinessMessagesAfterID(conversationID, businessID uuid.UUID, afterID string, limit int) ([]*dto.MessageDTO, int64, error) {
-	// แปลง afterID เป็น uuid
-	afterUUID, err := uuid.Parse(afterID)
-	if err != nil {
-		return nil, 0, fmt.Errorf("invalid after message ID: %w", err)
-	}
-
-	// ตรวจสอบว่าการสนทนาเป็นของธุรกิจ
-	belongsToBusiness, err := s.conversationRepo.CheckConversationBelongsToBusiness(conversationID, businessID)
-	if err != nil {
-		return nil, 0, err
-	}
-	if !belongsToBusiness {
-		return nil, 0, errors.New("this conversation does not belong to your business")
-	}
-
-	// ดึงข้อความที่ใหม่กว่า ID ที่ระบุ
-	messages, err := s.messageRepo.GetMessagesAfter(conversationID, afterUUID, limit)
-	if err != nil {
-		return nil, 0, fmt.Errorf("error fetching messages after ID: %w", err)
-	}
-
-	// ดึงจำนวนข้อความทั้งหมด
-	total, err := s.messageRepo.CountAllMessages(conversationID)
-	if err != nil {
-		total = int64(len(messages))
-	}
-
-	// แปลงเป็น DTOs
-	messageDTOs := make([]*dto.MessageDTO, 0, len(messages))
-	for _, msg := range messages {
-		messageDTO, err := s.ConvertToBusinessMessageDTO(msg, businessID)
-		if err != nil {
-			continue
-		}
-		messageDTOs = append(messageDTOs, messageDTO)
-	}
-
-	return messageDTOs, total, nil
-}
 
 // CheckConversationBelongsToBusiness ตรวจสอบว่าการสนทนาเป็นของธุรกิจ
-func (s *conversationService) CheckConversationBelongsToBusiness(conversationID, businessID uuid.UUID) (bool, error) {
-	return s.conversationRepo.CheckConversationBelongsToBusiness(conversationID, businessID)
-}
 
 // ========================================
 // 🔧 HELPER FUNCTIONS สำหรับ Business Context
 // ========================================
 
 // convertToBusinessConversationDTO แปลง Conversation model เป็น DTO สำหรับ business context
-func (s *conversationService) convertToBusinessConversationDTO(conversation *models.Conversation, businessID uuid.UUID, adminID uuid.UUID) (*dto.ConversationDTO, error) {
-	if conversation == nil {
-		return nil, errors.New("conversation is nil")
-	}
-
-	convDTO := &dto.ConversationDTO{
-		ID:              conversation.ID,
-		Type:            conversation.Type,
-		Title:           conversation.Title,
-		IconURL:         conversation.IconURL,
-		CreatedAt:       conversation.CreatedAt,
-		UpdatedAt:       conversation.UpdatedAt,
-		LastMessageText: conversation.LastMessageText,
-		LastMessageAt:   conversation.LastMessageAt,
-		CreatorID:       conversation.CreatorID,
-		BusinessID:      conversation.BusinessID,
-		IsActive:        conversation.IsActive,
-		Metadata:        conversation.Metadata,
-	}
-
-	// เพิ่มข้อมูลสำหรับ business conversation
-	if conversation.Type == "business" {
-		// ดึงข้อมูลลูกค้า (user ที่ไม่ใช่ business admin)
-		members, err := s.conversationRepo.GetMembers(conversation.ID)
-		if err == nil && len(members) > 0 {
-			for _, member := range members {
-				// หาสมาชิกที่ไม่ใช่ business admin
-				user, err := s.userRepo.FindByID(member.UserID)
-				if err == nil && user != nil {
-					// ตรวจสอบว่าเป็น customer (ไม่ใช่ admin ของธุรกิจ)
-					isBusinessAdmin, err := s.businessAdminRepo.CheckAdminPermission(member.UserID, businessID, []string{})
-					if err != nil || !isBusinessAdmin {
-						// นี่คือลูกค้า
-						// 1. ลองหา customer profile ก่อน
-						customerProfile, profileErr := s.customerProfileRepo.GetByBusinessAndUser(businessID, member.UserID)
-
-						// 2. ตั้งค่า title ตาม nickname ก่อน ถ้ามี
-						if profileErr == nil && customerProfile != nil && customerProfile.Nickname != "" {
-							convDTO.Title = customerProfile.Nickname
-						} else {
-							// 3. ถ้าไม่มี nickname หรือมีปัญหา ใช้ display_name ตามเดิม
-							convDTO.Title = user.DisplayName
-							if convDTO.Title == "" {
-								convDTO.Title = user.Username
-							}
-						}
-
-						// ใช้ profile image ตามเดิม
-						convDTO.IconURL = user.ProfileImageURL
-
-						// เพิ่มข้อมูลลูกค้า - เพิ่มข้อมูล nickname เข้าไปด้วย
-						contactInfo := types.JSONB{
-							"user_id":           user.ID.String(),
-							"username":          user.Username,
-							"display_name":      user.DisplayName,
-							"profile_image_url": user.ProfileImageURL,
-						}
-
-						// เพิ่ม nickname เข้าไปใน contactInfo ถ้ามี
-						if profileErr == nil && customerProfile != nil && customerProfile.Nickname != "" {
-							contactInfo["nickname"] = customerProfile.Nickname
-						}
-
-						convDTO.ContactInfo = contactInfo
-						break
-					}
-				}
-			}
-		}
-
-		// ❌ ไม่ส่ง business_info เพราะไม่จำเป็นในมุมมองของธุรกิจ
-		// Admin รู้อยู่แล้วว่าเป็นธุรกิจไหน
-	}
-
-	// จำนวนสมาชิก
-	members, err := s.conversationRepo.GetMembers(conversation.ID)
-	if err == nil {
-		convDTO.MemberCount = len(members)
-	}
-
-	// สำหรับธุรกิจ คำนวณ unread_count แบบพิเศษ
-	// นับข้อความที่ลูกค้าส่งมาแต่ธุรกิจยังไม่ได้อ่าน
-	var unreadCount int
-
-	// หาแอดมินคนสุดท้ายที่อ่านข้อความ
-	var lastBusinessReadTime *time.Time
-	for _, member := range members {
-		// ตรวจสอบว่าเป็นแอดมินของธุรกิจหรือไม่
-		isBusinessAdmin, err := s.businessAdminRepo.CheckAdminPermission(member.UserID, businessID, []string{})
-		if err == nil && isBusinessAdmin && member.LastReadAt != nil {
-			// หาเวลาอ่านล่าสุดของแอดมิน
-			if lastBusinessReadTime == nil || member.LastReadAt.After(*lastBusinessReadTime) {
-				lastBusinessReadTime = member.LastReadAt
-			}
-		}
-	}
-
-	// นับข้อความที่ส่งหลังจากเวลาอ่านล่าสุดของแอดมิน
-	if lastBusinessReadTime != nil {
-		// นับข้อความจากลูกค้าที่ส่งหลังจากเวลาอ่านล่าสุด
-		customerMessages, err := s.messageRepo.GetCustomerMessagesAfterTime(
-			conversation.ID, *lastBusinessReadTime, businessID)
-		if err == nil {
-			unreadCount = len(customerMessages)
-		}
-	} else {
-		// ถ้าไม่มีการอ่านเลย นับข้อความจากลูกค้าทั้งหมด
-		customerMessages, err := s.messageRepo.GetAllCustomerMessages(
-			conversation.ID, businessID)
-		if err == nil {
-			unreadCount = len(customerMessages)
-		}
-	}
-
-	convDTO.UnreadCount = unreadCount
-
-	// ตรวจสอบสถานะ pin/mute ของแอดมิน
-	member, err := s.conversationRepo.GetMember(conversation.ID, adminID)
-	if err == nil && member != nil {
-		convDTO.IsPinned = member.IsPinned
-		convDTO.IsMuted = member.IsMuted
-	} else {
-		// กรณีไม่พบข้อมูล ใช้ค่าเริ่มต้น
-		convDTO.IsPinned = false
-		convDTO.IsMuted = false
-	}
-
-	return convDTO, nil
-}
 
 // ConvertToBusinessMessageDTO แปลง Message model เป็น DTO สำหรับ business context
-func (s *conversationService) ConvertToBusinessMessageDTO(msg *models.Message, businessID uuid.UUID) (*dto.MessageDTO, error) {
-	if msg == nil {
-		return nil, errors.New("message is nil")
-	}
-
-	messageDTO := &dto.MessageDTO{
-		ID:                msg.ID,
-		ConversationID:    msg.ConversationID,
-		SenderID:          msg.SenderID,
-		SenderType:        msg.SenderType,
-		MessageType:       msg.MessageType,
-		Content:           msg.Content,
-		MediaURL:          msg.MediaURL,
-		MediaThumbnailURL: msg.MediaThumbnailURL,
-		Metadata:          msg.Metadata,
-		CreatedAt:         msg.CreatedAt,
-		UpdatedAt:         msg.UpdatedAt,
-		IsDeleted:         msg.IsDeleted,
-		IsEdited:          msg.IsEdited,
-		EditCount:         msg.EditCount,
-		ReplyToID:         msg.ReplyToID,
-		BusinessID:        msg.BusinessID,
-		ReadCount:         0,     // ค่าเริ่มต้น จะอัปเดตทีหลัง
-		IsRead:            false, // ค่าเริ่มต้น จะอัปเดตทีหลัง
-	}
-
-	// 1. เพิ่มข้อมูลผู้ส่ง (อาจต้องปรับในอนาคตสำหรับ business context)
-	s.addSenderInfoToDTO(messageDTO)
-
-	// 2. เพิ่มข้อมูลสถานะการอ่านสำหรับ business context
-	s.addBusinessReadStatusToDTO(messageDTO, businessID)
-
-	// 3. เพิ่มข้อมูลข้อความที่ตอบกลับ
-	if msg.ReplyToID != nil {
-		s.addReplyToInfoToDTO(messageDTO)
-	}
-
-	// 🚀 ในอนาคตอาจเพิ่มเติม:
-	// s.addBusinessAdminInfoToDTO(messageDTO, businessID)
-	// s.addBusinessAnalyticsToDTO(messageDTO, businessID)
-
-	return messageDTO, nil
-}
 
 // addBusinessReadStatusToDTO เพิ่มข้อมูลสถานะการอ่านสำหรับ business context
-func (s *conversationService) addBusinessReadStatusToDTO(msgDTO *dto.MessageDTO, businessID uuid.UUID) {
-	// ดึงข้อมูลการอ่านทั้งหมดของข้อความนี้
-	reads, err := s.messageRepo.GetReads(msgDTO.ID)
-	if err != nil {
-		return
-	}
-
-	// คำนวณ ReadCount (จำนวนการอ่านทั้งหมด)
-	msgDTO.ReadCount = len(reads)
-
-	// ตรวจสอบว่ามีแอดมินของธุรกิจอ่านข้อความแล้วหรือยัง
-	// Logic นี้แตกต่างจาก addReadStatusToDTO แบบปกติ
-	for _, read := range reads {
-		// ตรวจสอบว่า user ที่อ่านเป็นแอดมินของธุรกิจหรือไม่
-		isBusinessAdmin, err := s.businessAdminRepo.CheckAdminPermission(read.UserID, businessID, []string{})
-		if err == nil && isBusinessAdmin {
-			msgDTO.IsRead = true
-			break
-		}
-	}
-
-	// 💡 ในอนาคตอาจเพิ่มข้อมูลเพิ่มเติม:
-	// - ดูว่าแอดมินคนไหนอ่านบ้าง
-	// - เวลาที่อ่าน
-	// - การแจ้งเตือนไปยังลูกค้า
-}

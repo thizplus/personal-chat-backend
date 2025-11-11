@@ -19,7 +19,6 @@ type notificationService struct {
 	userRepo            repository.UserRepository
 	messageRepo         repository.MessageRepository
 	conversationRepo    repository.ConversationRepository
-	businessAccountRepo repository.BusinessAccountRepository
 }
 
 // NewNotificationService สร้าง instance ใหม่ของ NotificationService
@@ -28,14 +27,12 @@ func NewNotificationService(
 	userRepo repository.UserRepository,
 	messageRepo repository.MessageRepository,
 	conversationRepo repository.ConversationRepository,
-	businessAccountRepo repository.BusinessAccountRepository,
 ) service.NotificationService {
 	return &notificationService{
 		wsPort:              wsPort,
 		userRepo:            userRepo,
 		messageRepo:         messageRepo,
 		conversationRepo:    conversationRepo,
-		businessAccountRepo: businessAccountRepo,
 	}
 }
 
@@ -95,7 +92,6 @@ func (s *notificationService) NotifyNewMessage(conversationID uuid.UUID, message
 
 	// เพิ่มข้อมูลธุรกิจ (ถ้ามี)
 	if message.BusinessID != nil {
-		business, err := s.businessAccountRepo.GetByID(*message.BusinessID)
 		if err == nil && business != nil {
 			messageDTO.BusinessInfo = &dto.BusinessBasicDTO{
 				ID:      business.ID,
@@ -119,7 +115,6 @@ func (s *notificationService) NotifyNewMessage(conversationID uuid.UUID, message
 			// ตรวจสอบประเภทผู้ส่งข้อความที่ถูกตอบกลับ
 			if replyMsg.SenderType == "business" && replyMsg.BusinessID != nil {
 				// ถ้าเป็นข้อความจากธุรกิจ ใช้ชื่อธุรกิจเป็น sender_name
-				business, err := s.businessAccountRepo.GetByID(*replyMsg.BusinessID)
 				if err == nil && business != nil {
 					replyInfo.SenderName = business.Name
 				} else {
@@ -335,30 +330,10 @@ func (s *notificationService) NotifyNewConversation(conversation interface{}) er
 
 // =========== Business Notifications ===========
 
-// NotifyBusinessBroadcast แจ้งเตือนการประกาศจากธุรกิจ
-func (s *notificationService) NotifyBusinessBroadcast(userIDs []uuid.UUID, broadcast interface{}) {
-	s.wsPort.BroadcastBusinessBroadcast(userIDs, broadcast)
-}
 
-// NotifyBusinessNewFollower แจ้งเตือนผู้ติดตามใหม่ของธุรกิจ
-func (s *notificationService) NotifyBusinessNewFollower(businessID uuid.UUID, followerID uuid.UUID) {
-	s.wsPort.BroadcastBusinessNewFollower(businessID, followerID)
-}
 
-// NotifyBusinessWelcomeMessage แจ้งเตือนข้อความต้อนรับจากธุรกิจ
-func (s *notificationService) NotifyBusinessWelcomeMessage(userID uuid.UUID, businessID uuid.UUID, message interface{}) {
-	s.wsPort.BroadcastBusinessWelcomeMessage(userID, businessID, message)
-}
 
-// NotifyBusinessFollowStatusChanged แจ้งเตือนการเปลี่ยนสถานะการติดตามธุรกิจ
-func (s *notificationService) NotifyBusinessFollowStatusChanged(businessID uuid.UUID, userID uuid.UUID, isFollowing bool) {
-	s.wsPort.BroadcastBusinessFollowStatusChanged(businessID, userID, isFollowing)
-}
 
-// NotifyBusinessStatusChanged แจ้งเตือนการเปลี่ยนสถานะของธุรกิจ
-func (s *notificationService) NotifyBusinessStatusChanged(businessID uuid.UUID, status string) {
-	s.wsPort.BroadcastBusinessStatusChanged(businessID, status)
-}
 
 // =========== Friend Notifications ===========
 
