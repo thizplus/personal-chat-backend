@@ -24,7 +24,6 @@ type Message struct {
 	UpdatedAt         time.Time   `json:"updated_at" gorm:"type:timestamp with time zone;default:now()"`
 	IsDeleted         bool        `json:"is_deleted" gorm:"default:false"`
 	ReplyToID         *uuid.UUID  `json:"reply_to_id,omitempty" gorm:"type:uuid"`
-	BusinessID        *uuid.UUID  `json:"business_id,omitempty" gorm:"type:uuid"`
 	IsEdited          bool        `json:"is_edited" gorm:"default:false"`
 	EditCount         int         `json:"edit_count" gorm:"default:0"`
 
@@ -32,7 +31,6 @@ type Message struct {
 	Conversation  *Conversation         `json:"conversation,omitempty" gorm:"foreignkey:ConversationID"`
 	Sender        *User                 `json:"sender,omitempty" gorm:"foreignkey:SenderID"`
 	ReplyTo       *Message              `json:"reply_to,omitempty" gorm:"foreignkey:ReplyToID"`
-	Business      *BusinessAccount      `json:"business,omitempty" gorm:"foreignkey:BusinessID"`
 	Reads         []*MessageRead        `json:"reads,omitempty" gorm:"foreignkey:MessageID"`
 	EditHistory   []*MessageEditHistory `json:"edit_history,omitempty" gorm:"foreignkey:MessageID"`
 	DeleteHistory *MessageDeleteHistory `json:"delete_history,omitempty" gorm:"foreignkey:MessageID"`

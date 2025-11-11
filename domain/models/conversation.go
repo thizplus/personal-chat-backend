@@ -12,7 +12,7 @@ import (
 // Conversation - การสนทนาระหว่างผู้ใช้หรือกลุ่ม
 type Conversation struct {
 	ID              uuid.UUID   `json:"id" gorm:"type:uuid;primary_key;default:uuid_generate_v4()"`
-	Type            string      `json:"type" gorm:"type:varchar(20);not null"` // private, group, business
+	Type            string      `json:"type" gorm:"type:varchar(20);not null"` // private, group
 	Title           string      `json:"title,omitempty" gorm:"type:varchar(100)"`
 	IconURL         string      `json:"icon_url,omitempty" gorm:"type:text"`
 	CreatedAt       time.Time   `json:"created_at" gorm:"type:timestamp with time zone;default:now()"`
@@ -20,13 +20,11 @@ type Conversation struct {
 	LastMessageText string      `json:"last_message_text,omitempty" gorm:"type:text"`
 	LastMessageAt   *time.Time  `json:"last_message_at,omitempty" gorm:"type:timestamp with time zone"`
 	CreatorID       *uuid.UUID  `json:"creator_id,omitempty" gorm:"type:uuid"`
-	BusinessID      *uuid.UUID  `json:"business_id,omitempty" gorm:"type:uuid"`
 	IsActive        bool        `json:"is_active" gorm:"default:true"`
 	Metadata        types.JSONB `json:"metadata,omitempty" gorm:"type:jsonb;default:'{}'::jsonb"`
 
 	// Associations
 	Creator  *User                 `json:"creator,omitempty" gorm:"foreignkey:CreatorID"`
-	Business *BusinessAccount      `json:"business,omitempty" gorm:"foreignkey:BusinessID"`
 	Members  []*ConversationMember `json:"members,omitempty" gorm:"foreignkey:ConversationID"`
 	Messages []*Message            `json:"messages,omitempty" gorm:"foreignkey:ConversationID"`
 }
