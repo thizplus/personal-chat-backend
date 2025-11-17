@@ -14,7 +14,7 @@ type UserService interface {
 	UpdateProfile(id uuid.UUID, data types.JSONB) (*models.User, error)
 	UpdateLastActive(id uuid.UUID) error
 	SearchUsers(query string, limit, offset int) ([]*models.User, int, error)
-	GetUserStatuses(userIDs []uuid.UUID) (types.JSONB, error)
+	GetUserStatuses(userIDs []uuid.UUID) ([]types.JSONB, error) // เปลี่ยนจาก types.JSONB เป็น []types.JSONB
 	UploadProfileImage(userID uuid.UUID, imageURL string) error
 	SearchUsersExact(query string, limit, offset int) ([]*models.User, int64, error)
 }

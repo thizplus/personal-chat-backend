@@ -105,15 +105,34 @@ func (h *Hub) broadcastToConversation(convID uuid.UUID, msgType MessageType, dat
 
 // sendToClient sends a message to a specific client
 func (h *Hub) sendToClient(client *Client, response WSResponse) {
+	// Recover from panic if channel is closed
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Recovered from panic in sendToClient for client %s: %v", client.ID, r)
+		}
+	}()
+
 	data, err := json.Marshal(response)
 	if err != nil {
 		return
 	}
 
+	// Check if client still exists in hub
+	h.clientsMux.RLock()
+	_, exists := h.clients[client.ID]
+	h.clientsMux.RUnlock()
+
+	if !exists {
+		log.Printf("Client %s no longer exists, skipping send", client.ID)
+		return
+	}
+
 	select {
 	case client.Send <- data:
+		// Successfully sent
 	default:
-		// Client's send channel is full
+		// Client's send channel is full or closed
+		log.Printf("Failed to send to client %s (channel full or closed)", client.ID)
 		go func() {
 			h.unregister <- client
 		}()

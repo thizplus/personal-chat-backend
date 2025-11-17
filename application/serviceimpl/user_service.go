@@ -97,8 +97,9 @@ func (s *userService) SearchUsers(query string, limit, offset int) ([]*models.Us
 }
 
 // GetUserStatuses ดึงสถานะของผู้ใช้หลายคน
-func (s *userService) GetUserStatuses(userIDs []uuid.UUID) (types.JSONB, error) {
-	statuses := make(types.JSONB)
+func (s *userService) GetUserStatuses(userIDs []uuid.UUID) ([]types.JSONB, error) {
+	// เปลี่ยนจาก map เป็น array
+	statuses := make([]types.JSONB, 0, len(userIDs))
 
 	for _, id := range userIDs {
 		user, err := s.userRepo.FindByID(id)
@@ -106,11 +107,12 @@ func (s *userService) GetUserStatuses(userIDs []uuid.UUID) (types.JSONB, error) 
 			continue // ข้ามกรณีไม่พบผู้ใช้
 		}
 
-		// ใช้ id.String() เป็นคีย์
-		statuses[id.String()] = types.JSONB{
-			"last_active_at": user.LastActiveAt,
+		// เพิ่ม user_id เข้าไปใน object แทนการใช้เป็น key
+		statuses = append(statuses, types.JSONB{
+			"user_id":        id.String(),
 			"status":         user.Status,
-		}
+			"last_active_at": user.LastActiveAt,
+		})
 	}
 
 	return statuses, nil

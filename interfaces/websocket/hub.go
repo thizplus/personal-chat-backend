@@ -503,12 +503,32 @@ func (h *Hub) loadUserConversations(client *Client) {
 		return
 	}
 
+	// Check if client still exists before subscribing
+	h.clientsMux.RLock()
+	_, exists := h.clients[client.ID]
+	h.clientsMux.RUnlock()
+
+	if !exists {
+		log.Printf("Client %s disconnected before conversations loaded, skipping", client.ID)
+		return
+	}
+
 	// Subscribe to each conversation
 	h.conversationSubsMux.Lock()
 	for _, conv := range conversations {
 		h.conversationSubs[conv.ID] = append(h.conversationSubs[conv.ID], client.ID)
 	}
 	h.conversationSubsMux.Unlock()
+
+	// Check again if client still exists before sending
+	h.clientsMux.RLock()
+	_, exists = h.clients[client.ID]
+	h.clientsMux.RUnlock()
+
+	if !exists {
+		log.Printf("Client %s disconnected before sending conversations, skipping", client.ID)
+		return
+	}
 
 	// สร้างรายการการสนทนาเพื่อส่งให้ client
 	conversationList := make([]map[string]interface{}, len(conversations))
