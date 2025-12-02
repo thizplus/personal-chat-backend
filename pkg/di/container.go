@@ -13,6 +13,7 @@ import (
 	"github.com/thizplus/gofiber-chat-api/infrastructure/persistence/postgres"
 	"github.com/thizplus/gofiber-chat-api/interfaces/api/handler"
 	"github.com/thizplus/gofiber-chat-api/interfaces/websocket"
+	"github.com/thizplus/gofiber-chat-api/pkg/scheduler"
 
 	"gorm.io/gorm"
 )
@@ -28,7 +29,12 @@ type Container struct {
 	ConversationMemberRepo     repository.ConversationMemberRepository
 	MessageRepo                repository.MessageRepository
 	MessageReadRepo            repository.MessageReadRepository
+	MessageMentionRepo         repository.MessageMentionRepository
 	StickerRepo                repository.StickerRepository
+	FileUploadRepo             repository.FileUploadRepository
+	GroupActivityRepo          repository.GroupActivityRepository
+	ScheduledMessageRepo       repository.ScheduledMessageRepository
+	NoteRepo                   repository.NoteRepository
 
 	// WebSocket Components
 	WebSocketHub  *websocket.Hub
@@ -45,6 +51,10 @@ type Container struct {
 	MessageReadService            service.MessageReadService
 	StickerService                service.StickerService
 	NotificationService           service.NotificationService
+	PresenceService               service.PresenceService
+	GroupActivityService          service.GroupActivityService
+	ScheduledMessageService       service.ScheduledMessageService
+	NoteService                   service.NoteService
 
 	// Handlers
 	AuthHandler                   *handler.AuthHandler
@@ -55,11 +65,17 @@ type Container struct {
 	ConversationMemberHandler     *handler.ConversationMemberHandler
 	MessageHandler                *handler.MessageHandler
 	MessageReadHandler            *handler.MessageReadHandler
+	MentionHandler                *handler.MentionHandler
 	StickerHandler                *handler.StickerHandler
 	SearchHandler                 *handler.SearchHandler
+	PresenceHandler               *handler.PresenceHandler
+	ScheduledMessageHandler       *handler.ScheduledMessageHandler
+	NoteHandler                   *handler.NoteHandler
 
-	// Scheduler
-	RedisClient        *redis.Client
+	// Scheduler & Background Jobs
+	RedisClient                    *redis.Client
+	FileCleanupScheduler           *scheduler.FileCleanupScheduler
+	ScheduledMessageProcessor      *scheduler.ScheduledMessageProcessor
 }
 
 // NewContainer สร้าง container ใหม่พร้อมกับ dependencies ทั้งหมด
@@ -78,7 +94,12 @@ func NewContainer(db *gorm.DB, storageService service.FileStorageService, redisC
 	container.ConversationMemberRepo = postgres.NewConversationMemberRepository(db)
 	container.MessageRepo = postgres.NewMessageRepository(db)
 	container.MessageReadRepo = postgres.NewMessageReadRepository(db)
+	container.MessageMentionRepo = postgres.NewMessageMentionRepository(db)
 	container.StickerRepo = postgres.NewStickerRepository(db)
+	container.FileUploadRepo = postgres.NewFileUploadRepository(db)
+	container.GroupActivityRepo = postgres.NewGroupActivityRepository(db)
+	container.ScheduledMessageRepo = postgres.NewScheduledMessageRepository(db)
+	container.NoteRepo = postgres.NewNoteRepository(db)
 
 	log.Println("เชื่อมต่อกับบริการจัดเก็บไฟล์สำเร็จ")
 
@@ -117,20 +138,26 @@ func NewContainer(db *gorm.DB, storageService service.FileStorageService, redisC
 		container.StorageService,
 	)
 
-	container.MessageService = serviceimpl.NewMessageService(
-		container.MessageRepo,
-		container.MessageReadRepo,
-		container.ConversationRepo,
+	container.PresenceService = serviceimpl.NewPresenceService(
+		redisClient,
 		container.UserRepo,
-		container.NotificationService,
+		container.UserFriendshipRepo,
 	)
 
+	// MessageService และ ScheduledMessageService จะถูกสร้างหลัง NotificationService (ย้ายไปด้านล่าง)
 
+	container.NoteService = serviceimpl.NewNoteService(
+		container.NoteRepo,
+		container.ConversationMemberRepo,
+	)
 
 	// สร้าง WebSocket Hub ที่มีเฉพาะ services ที่จำเป็น
 	container.WebSocketHub = websocket.NewHub(
 		container.ConversationService,
-		nil, // NotificationService จะถูกตั้งค่าภายหลัง
+		container.ConversationMemberService,
+		container.UserFriendshipService,
+		nil,                 // NotificationService จะถูกตั้งค่าภายหลัง
+		container.UserRepo, // 🆕 เพิ่ม UserRepo สำหรับ typing user info
 	)
 
 	// สร้าง WebSocketAdapter
@@ -147,17 +174,55 @@ func NewContainer(db *gorm.DB, storageService service.FileStorageService, redisC
 	// ตั้งค่า NotificationService ใน Hub
 	container.WebSocketHub.SetNotificationService(container.NotificationService)
 
+	// สร้าง GroupActivityService (ต้องสร้างหลัง NotificationService)
+	container.GroupActivityService = serviceimpl.NewGroupActivityService(
+		container.GroupActivityRepo,
+		container.ConversationRepo,
+		container.NotificationService,
+	)
+
+	// สร้าง MessageService (ต้องสร้างหลัง NotificationService)
+	container.MessageService = serviceimpl.NewMessageService(
+		container.MessageRepo,
+		container.MessageReadRepo,
+		container.ConversationRepo,
+		container.UserRepo,
+		container.NotificationService,
+		container.MessageMentionRepo,
+	)
+
+	// สร้าง ScheduledMessageService (ต้องสร้างหลัง MessageService)
+	container.ScheduledMessageService = serviceimpl.NewScheduledMessageService(
+		container.ScheduledMessageRepo,
+		container.ConversationRepo,
+		container.MessageService,
+	)
+
 	// สร้าง handlers
 	container.AuthHandler = handler.NewAuthHandler(container.AuthService)
 	container.UserHandler = handler.NewUserHandler(container.UserService, container.AuthService, container.StorageService)
-	container.FileHandler = handler.NewFileHandler(container.StorageService)
+	container.FileHandler = handler.NewFileHandler(container.StorageService, container.FileUploadRepo)
 	container.UserFriendshipHandler = handler.NewUserFriendshipHandler(container.UserFriendshipService, container.UserService, container.ConversationMemberService, container.NotificationService)
-	container.ConversationHandler = handler.NewConversationHandler(container.ConversationService, container.NotificationService)
-	container.ConversationMemberHandler = handler.NewConversationMemberHandler(container.ConversationMemberService, container.NotificationService)
-	container.MessageHandler = handler.NewMessageHandler(container.MessageService, container.NotificationService)
-	container.MessageReadHandler = handler.NewMessageReadHandler(container.MessageReadService, container.NotificationService)
+	container.ConversationHandler = handler.NewConversationHandler(container.ConversationService, container.NotificationService, container.MessageReadService, container.GroupActivityService, container.ConversationRepo, container.MessageService)
+	container.ConversationMemberHandler = handler.NewConversationMemberHandler(container.ConversationMemberService, container.NotificationService, container.GroupActivityService)
+	container.MessageHandler = handler.NewMessageHandler(container.MessageService, container.NotificationService, container.ConversationMemberService, container.ConversationRepo, container.UserFriendshipService)
+	container.MessageReadHandler = handler.NewMessageReadHandler(container.MessageReadService, container.NotificationService, container.MessageRepo)
+	container.MentionHandler = handler.NewMentionHandler(container.MessageMentionRepo)
 	container.StickerHandler = handler.NewStickerHandler(container.StickerService)
 	container.SearchHandler = handler.NewSearchHandler(container.UserService, container.UserFriendshipService)
+	container.PresenceHandler = handler.NewPresenceHandler(container.PresenceService)
+	container.ScheduledMessageHandler = handler.NewScheduledMessageHandler(container.ScheduledMessageService)
+	container.NoteHandler = handler.NewNoteHandler(container.NoteService)
+
+	// สร้าง background jobs
+	container.FileCleanupScheduler = scheduler.NewFileCleanupScheduler(
+		container.FileUploadRepo,
+		container.StorageService,
+	)
+
+	container.ScheduledMessageProcessor = scheduler.NewScheduledMessageProcessor(
+		container.ScheduledMessageService,
+	)
 
 	return container, nil
 }
