@@ -27,6 +27,7 @@ type MediaItemDTO struct {
 	FileSize         int64       `json:"file_size,omitempty"`
 	Metadata         types.JSONB `json:"metadata,omitempty"`
 	CreatedAt        time.Time   `json:"created_at"`
+	IsAlbum          bool        `json:"is_album"` // true ถ้ามาจาก album message
 }
 
 // MediaListDTO รายการ media พร้อม pagination

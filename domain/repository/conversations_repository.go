@@ -19,6 +19,9 @@ type ConversationRepository interface {
 	// UpdateConversation อัพเดตข้อมูลการสนทนา
 	UpdateConversation(id uuid.UUID, updateData types.JSONB) error
 
+	// Update อัปเดตการสนทนาทั้งหมด
+	Update(conversation *models.Conversation) error
+
 	// Delete ลบการสนทนา (เปลี่ยนสถานะเป็น inactive)
 	Delete(id uuid.UUID) error
 
@@ -36,6 +39,9 @@ type ConversationRepository interface {
 
 	// GetMembers ดึงรายการสมาชิกทั้งหมดในการสนทนา
 	GetMembers(conversationID uuid.UUID) ([]*models.ConversationMember, error)
+
+	// UpdateMember อัปเดตข้อมูลสมาชิก
+	UpdateMember(member *models.ConversationMember) error
 
 	// RemoveMember ลบสมาชิกออกจากการสนทนา
 	RemoveMember(conversationID, userID uuid.UUID) error

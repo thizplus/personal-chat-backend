@@ -3,6 +3,7 @@ package postgres
 
 import (
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -64,9 +65,31 @@ func (r *messageRepository) Create(message *models.Message) error {
 	return r.db.Create(message).Error
 }
 
+// BulkCreate สร้างหลายข้อความพร้อมกัน (สำหรับ Album/Bulk Upload)
+func (r *messageRepository) BulkCreate(messages []*models.Message) error {
+	return r.db.CreateInBatches(messages, 100).Error
+}
+
+// GetMessagesByAlbumID ดึงข้อความทั้งหมดในอัลบั้มเดียวกัน
+func (r *messageRepository) GetMessagesByAlbumID(albumID string) ([]*models.Message, error) {
+	var messages []*models.Message
+	err := r.db.
+		Where("metadata->>'album_id' = ?", albumID).
+		Order("(metadata->>'album_position')::int ASC").
+		Find(&messages).Error
+	return messages, err
+}
+
 // Update อัพเดตข้อความ
 func (r *messageRepository) Update(message *models.Message) error {
-	return r.db.Save(message).Error
+	// ใช้ Updates แทน Save เพื่อหลีกเลี่ยง nil pointer ใน AlbumFiles
+	// Updates จะอัปเดตเฉพาะ non-zero fields
+	return r.db.Model(&models.Message{}).Where("id = ?", message.ID).Updates(message).Error
+}
+
+// UpdateFields อัพเดตเฉพาะ fields ที่ระบุ
+func (r *messageRepository) UpdateFields(messageID uuid.UUID, updates map[string]interface{}) error {
+	return r.db.Model(&models.Message{}).Where("id = ?", messageID).Updates(updates).Error
 }
 
 // Delete ลบข้อความ (soft delete)
@@ -367,7 +390,8 @@ func (r *messageRepository) GetMessageTypeSummary(conversationID uuid.UUID) (map
 		Count       int64
 	}
 
-	var results []Result
+	// 1. นับ single media messages (แบบเดิม)
+	var singleMediaResults []Result
 	err := r.db.Model(&models.Message{}).
 		Select("message_type, COUNT(*) as count").
 		Where("conversation_id = ? AND is_deleted = ? AND message_type IN (?)",
@@ -375,16 +399,45 @@ func (r *messageRepository) GetMessageTypeSummary(conversationID uuid.UUID) (map
 			false,
 			[]string{"image", "video", "file"}).
 		Group("message_type").
-		Find(&results).Error
+		Find(&singleMediaResults).Error
 
 	if err != nil {
 		return nil, err
 	}
 
-	// แปลงผลลัพธ์เป็น map
+	// สร้าง summary map
 	summary := make(map[string]int64)
-	for _, result := range results {
+	for _, result := range singleMediaResults {
 		summary[result.MessageType] = result.Count
+	}
+
+	// 2. นับ files ใน albums โดยใช้ JSONB functions
+	type AlbumFileCount struct {
+		FileType string
+		Count    int64
+	}
+
+	var albumFileCounts []AlbumFileCount
+	err = r.db.Raw(`
+		SELECT
+			file->>'file_type' as file_type,
+			COUNT(*) as count
+		FROM messages,
+			 jsonb_array_elements(album_files) as file
+		WHERE conversation_id = ?
+		  AND is_deleted = false
+		  AND message_type = 'album'
+		  AND album_files IS NOT NULL
+		GROUP BY file->>'file_type'
+	`, conversationID).Scan(&albumFileCounts).Error
+
+	if err != nil {
+		return nil, err
+	}
+
+	// รวมจำนวนจาก albums เข้าไปใน summary
+	for _, albumCount := range albumFileCounts {
+		summary[albumCount.FileType] += albumCount.Count
 	}
 
 	return summary, nil
@@ -407,24 +460,148 @@ func (r *messageRepository) GetMediaByType(conversationID uuid.UUID, messageType
 	var messages []*models.Message
 	var total int64
 
-	query := r.db.Model(&models.Message{}).
-		Where("conversation_id = ? AND is_deleted = ?", conversationID, false)
-
-	// กรณีที่เป็น link ใช้เงื่อนไขพิเศษ
+	// กรณี link (ไม่เปลี่ยนแปลง)
 	if messageType == "link" {
-		query = query.Where("metadata->>'links' IS NOT NULL AND metadata->>'links' != '[]'")
-	} else {
-		// กรณีอื่นๆ (image, video, file)
-		query = query.Where("message_type = ?", messageType)
+		query := r.db.Model(&models.Message{}).
+			Where("conversation_id = ? AND is_deleted = ?", conversationID, false).
+			Where("metadata->>'links' IS NOT NULL AND metadata->>'links' != '[]'")
+
+		if err := query.Count(&total).Error; err != nil {
+			return nil, 0, err
+		}
+
+		if err := query.Order("created_at DESC").
+			Limit(limit).
+			Offset(offset).
+			Find(&messages).Error; err != nil {
+			return nil, 0, err
+		}
+
+		return messages, total, nil
 	}
 
-	// นับจำนวนทั้งหมด
-	if err := query.Count(&total).Error; err != nil {
+	// สำหรับ image/video/file: ดึงทั้ง single messages และ album messages
+
+	// 1. นับจำนวนรวม (single + album files)
+	var singleCount int64
+	err := r.db.Model(&models.Message{}).
+		Where("conversation_id = ? AND is_deleted = ? AND message_type = ?",
+			conversationID, false, messageType).
+		Count(&singleCount).Error
+	if err != nil {
 		return nil, 0, err
 	}
 
-	// ดึงข้อมูล
-	if err := query.Order("created_at DESC").
+	var albumFileCount int64
+	err = r.db.Raw(`
+		SELECT COUNT(*)
+		FROM messages,
+			 jsonb_array_elements(album_files) as file
+		WHERE conversation_id = ?
+		  AND is_deleted = false
+		  AND message_type = 'album'
+		  AND album_files IS NOT NULL
+		  AND file->>'file_type' = ?
+	`, conversationID, messageType).Scan(&albumFileCount).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	total = singleCount + albumFileCount
+
+	// 2. ดึง messages ทั้ง 2 ประเภท
+	// Query for single media messages
+	err = r.db.Model(&models.Message{}).
+		Where("conversation_id = ? AND is_deleted = ? AND message_type = ?",
+			conversationID, false, messageType).
+		Order("created_at DESC").
+		Find(&messages).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Query for album messages that contain this media type
+	var albumMessages []*models.Message
+	err = r.db.Raw(`
+		SELECT DISTINCT m.*
+		FROM messages m,
+			 jsonb_array_elements(m.album_files) as file
+		WHERE m.conversation_id = ?
+		  AND m.is_deleted = false
+		  AND m.message_type = 'album'
+		  AND m.album_files IS NOT NULL
+		  AND file->>'file_type' = ?
+		ORDER BY m.created_at DESC
+	`, conversationID, messageType).Scan(&albumMessages).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// รวม messages ทั้ง 2 ประเภท
+	messages = append(messages, albumMessages...)
+
+	// เรียงตาม created_at DESC
+	sort.Slice(messages, func(i, j int) bool {
+		return messages[i].CreatedAt.After(messages[j].CreatedAt)
+	})
+
+	// Apply pagination
+	if offset >= len(messages) {
+		return []*models.Message{}, total, nil
+	}
+
+	end := offset + limit
+	if end > len(messages) {
+		end = len(messages)
+	}
+
+	messages = messages[offset:end]
+
+	return messages, total, nil
+}
+
+// PinMessage ปักหมุดข้อความ
+func (r *messageRepository) PinMessage(messageID, userID uuid.UUID) error {
+	now := time.Now()
+	return r.db.Model(&models.Message{}).
+		Where("id = ?", messageID).
+		Updates(map[string]interface{}{
+			"is_pinned": true,
+			"pinned_by": userID,
+			"pinned_at": now,
+		}).Error
+}
+
+// UnpinMessage ยกเลิกการปักหมุดข้อความ
+func (r *messageRepository) UnpinMessage(messageID uuid.UUID) error {
+	return r.db.Model(&models.Message{}).
+		Where("id = ?", messageID).
+		Updates(map[string]interface{}{
+			"is_pinned": false,
+			"pinned_by": nil,
+			"pinned_at": nil,
+		}).Error
+}
+
+// GetPinnedMessages ดึงรายการข้อความที่ปักหมุดในการสนทนา
+func (r *messageRepository) GetPinnedMessages(conversationID uuid.UUID, limit, offset int) ([]*models.Message, int64, error) {
+	var messages []*models.Message
+	var total int64
+
+	// นับจำนวนทั้งหมด
+	if err := r.db.Model(&models.Message{}).
+		Where("conversation_id = ? AND is_pinned = ? AND is_deleted = ?", conversationID, true, false).
+		Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// ดึงข้อมูล - เรียงตามเวลาที่ปักหมุด (ล่าสุดก่อน)
+	if err := r.db.
+		Preload("Sender").
+		Preload("Pinner").
+		Preload("ReplyTo").
+		Where("conversation_id = ? AND is_pinned = ? AND is_deleted = ?", conversationID, true, false).
+		Order("pinned_at DESC").
 		Limit(limit).
 		Offset(offset).
 		Find(&messages).Error; err != nil {
@@ -432,5 +609,122 @@ func (r *messageRepository) GetMediaByType(conversationID uuid.UUID, messageType
 	}
 
 	return messages, total, nil
+}
+
+// FindByDateRange ดึงข้อความในช่วงวันที่กำหนด
+func (r *messageRepository) FindByDateRange(conversationID uuid.UUID, startDate, endDate time.Time, limit int) ([]*models.Message, int64, error) {
+	var messages []*models.Message
+	var total int64
+
+	// นับจำนวนข้อความทั้งหมดในช่วงเวลานี้
+	if err := r.db.Model(&models.Message{}).
+		Where("conversation_id = ? AND created_at >= ? AND created_at < ? AND is_deleted = ?",
+			conversationID, startDate, endDate, false).
+		Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// ดึงข้อความ - เรียงตามเวลา (เก่าสุดก่อน)
+	if err := r.db.
+		Preload("Sender").
+		Preload("ReplyTo").
+		Preload("ReplyTo.Sender").
+		Where("conversation_id = ? AND created_at >= ? AND created_at < ? AND is_deleted = ?",
+			conversationID, startDate, endDate, false).
+		Order("created_at ASC").
+		Limit(limit).
+		Find(&messages).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return messages, total, nil
+}
+
+// SearchMessages ค้นหาข้อความโดยใช้ full-text search (CURSOR-BASED)
+func (r *messageRepository) SearchMessages(
+	searchQuery string,
+	conversationID *uuid.UUID,
+	limit int,
+	cursor *string,
+	direction string,
+) ([]*models.Message, *string, bool, error) {
+	var messages []*models.Message
+
+	// สร้าง base query
+	baseQuery := r.db.Model(&models.Message{}).
+		Where("is_deleted = ?", false).
+		Where("content_tsvector @@ plainto_tsquery('english', ?)", searchQuery)
+
+	// Filter by conversation if specified
+	if conversationID != nil {
+		baseQuery = baseQuery.Where("conversation_id = ?", *conversationID)
+	}
+
+	// Apply cursor pagination
+	if cursor != nil && *cursor != "" {
+		cursorID, err := uuid.Parse(*cursor)
+		if err != nil {
+			return nil, nil, false, errors.New("invalid cursor")
+		}
+
+		// Get cursor message to compare timestamp
+		var cursorMsg models.Message
+		if err := r.db.Where("id = ?", cursorID).First(&cursorMsg).Error; err != nil {
+			return nil, nil, false, errors.New("cursor message not found")
+		}
+
+		if direction == "after" {
+			// Get newer messages
+			baseQuery = baseQuery.Where(
+				"(created_at > ?) OR (created_at = ? AND id > ?)",
+				cursorMsg.CreatedAt, cursorMsg.CreatedAt, cursorID,
+			)
+		} else {
+			// Get older messages (default)
+			baseQuery = baseQuery.Where(
+				"(created_at < ?) OR (created_at = ? AND id < ?)",
+				cursorMsg.CreatedAt, cursorMsg.CreatedAt, cursorID,
+			)
+		}
+	}
+
+	// Order by time (DESC for "before", ASC for "after")
+	if direction == "after" {
+		baseQuery = baseQuery.Order("created_at ASC, id ASC")
+	} else {
+		baseQuery = baseQuery.Order("created_at DESC, id DESC")
+	}
+
+	// Fetch limit + 1 to check if there are more results
+	if err := baseQuery.
+		Preload("Sender").
+		Preload("Conversation").
+		Preload("ReplyTo").
+		Limit(limit + 1).
+		Find(&messages).Error; err != nil {
+		return nil, nil, false, err
+	}
+
+	// Check if there are more results
+	hasMore := len(messages) > limit
+	if hasMore {
+		messages = messages[:limit] // Remove the extra message
+	}
+
+	// Reverse if direction is "before" to maintain chronological order
+	if direction != "after" && len(messages) > 0 {
+		for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+			messages[i], messages[j] = messages[j], messages[i]
+		}
+	}
+
+	// Get next cursor (last message ID)
+	var nextCursor *string
+	if len(messages) > 0 {
+		lastID := messages[len(messages)-1].ID.String()
+		nextCursor = &lastID
+	}
+
+	return messages, nextCursor, hasMore, nil
 }
 

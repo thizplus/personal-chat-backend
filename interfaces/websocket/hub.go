@@ -10,6 +10,7 @@ import (
 
 	"github.com/gofiber/contrib/websocket"
 	"github.com/google/uuid"
+	"github.com/thizplus/gofiber-chat-api/domain/repository"
 	"github.com/thizplus/gofiber-chat-api/domain/service"
 )
 
@@ -37,8 +38,12 @@ type Hub struct {
 	handlers map[string]MessageHandler
 
 	// Core services (เฉพาะที่จำเป็น)
-	conversationService  service.ConversationService
-	notificationService  service.NotificationService
+	conversationService       service.ConversationService
+	conversationMemberService service.ConversationMemberService
+	userFriendshipService     service.UserFriendshipService
+	notificationService       service.NotificationService
+	presenceService           service.PresenceService
+	userRepo                  repository.UserRepository // 🆕 เพิ่มสำหรับ typing user info
 
 	// Channels
 	register   chan *Client
@@ -113,12 +118,16 @@ const (
 	TypePong       MessageType = "pong"
 
 	// Chat messages
-	TypeMessageSend    MessageType = "message.send"
-	TypeMessageReceive MessageType = "message.receive"
-	TypeMessageEdit    MessageType = "message.edit"
-	TypeMessageDelete  MessageType = "message.delete"
-	TypeMessageRead    MessageType = "message.read"
-	TypeMessageTyping  MessageType = "message.typing"
+	TypeMessageSend      MessageType = "message.send"
+	TypeMessageReceive   MessageType = "message.receive"
+	TypeMessageEdit      MessageType = "message.updated"
+	TypeMessageDelete    MessageType = "message.delete"
+	TypeMessageRead      MessageType = "message.read"
+	TypeMessageDelivered MessageType = "message.delivered"
+	TypeMessageTyping    MessageType = "message.typing"
+	TypeTypingStart      MessageType = "typing_start"    // 🆕 เพิ่ม
+	TypeTypingStop       MessageType = "typing_stop"     // 🆕 เพิ่ม
+	TypeUserTyping       MessageType = "user_typing"     // 🆕 เพิ่ม (broadcast)
 
 	// Conversation events
 	TypeConversationCreate MessageType = "conversation.create"
@@ -143,6 +152,12 @@ const (
 	TypeFriendRequest MessageType = "friend.request"
 	TypeFriendAccept  MessageType = "friend.accept"
 	TypeFriendRemove  MessageType = "friend.remove"
+
+	// Block events
+	TypeUserBlocked     MessageType = "user.blocked"       // ส่งไปยัง blocker
+	TypeUserBlockedBy   MessageType = "user.blocked_by"    // ส่งไปยังคนที่ถูก block
+	TypeUserUnblocked   MessageType = "user.unblocked"     // ส่งไปยัง unblocker
+	TypeUserUnblockedBy MessageType = "user.unblocked_by"  // ส่งไปยังคนที่ถูก unblock
 
 	// Notifications
 	TypeNotification MessageType = "notification"
@@ -186,20 +201,26 @@ type MessageHandler interface {
 // NewHub creates a new WebSocket hub
 func NewHub(
 	conversationService service.ConversationService,
+	conversationMemberService service.ConversationMemberService,
+	userFriendshipService service.UserFriendshipService,
 	notificationService service.NotificationService,
+	userRepo repository.UserRepository, // 🆕 เพิ่ม userRepo
 ) *Hub {
 	hub := &Hub{
-		clients:              make(map[uuid.UUID]*Client),
-		userConnections:      make(map[uuid.UUID][]uuid.UUID),
-		conversationSubs:     make(map[uuid.UUID][]uuid.UUID),
-		userStatusSubs:       make(map[uuid.UUID][]uuid.UUID),
-		handlers:             make(map[string]MessageHandler),
-		conversationService:  conversationService,
-		notificationService:  notificationService,
-		register:             make(chan *Client),
-		unregister:           make(chan *Client),
-		broadcast:            make(chan *BroadcastMessage, 1000), // Buffer size
-		startTime:            time.Now(),
+		clients:                   make(map[uuid.UUID]*Client),
+		userConnections:           make(map[uuid.UUID][]uuid.UUID),
+		conversationSubs:          make(map[uuid.UUID][]uuid.UUID),
+		userStatusSubs:            make(map[uuid.UUID][]uuid.UUID),
+		handlers:                  make(map[string]MessageHandler),
+		conversationService:       conversationService,
+		conversationMemberService: conversationMemberService,
+		userFriendshipService:     userFriendshipService,
+		notificationService:       notificationService,
+		userRepo:                  userRepo, // 🆕 เพิ่ม userRepo
+		register:                  make(chan *Client),
+		unregister:                make(chan *Client),
+		broadcast:                 make(chan *BroadcastMessage, 1000), // Buffer size
+		startTime:                 time.Now(),
 		totalMessages:        0,
 	}
 
@@ -328,10 +349,19 @@ func (h *Hub) registerClient(client *Client) {
 
 	// แจ้งเตือนสถานะออนไลน์ให้กับผู้ที่ subscribe
 	if isFirstConnection {
+		// Update presence in Redis and Database
+		if h.presenceService != nil {
+			if err := h.presenceService.SetUserOnline(client.UserID); err != nil {
+				log.Printf("Error setting user online: %v", err)
+			}
+		}
+
+		now := time.Now()
 		statusData := map[string]interface{}{
-			"user_id":   client.UserID,
-			"online":    true,
-			"timestamp": time.Now(),
+			"user_id":   client.UserID.String(),
+			"status":    "online",           // 🆕 เพิ่ม status field
+			"online":    true,               // ✅ เก็บไว้ (backward compatible)
+			"timestamp": now.Format(time.RFC3339),
 		}
 
 		// 1. แจ้งไปยังผู้ใช้ทุกคนที่ subscribe สถานะของผู้ใช้นี้
@@ -346,10 +376,20 @@ func (h *Hub) registerClient(client *Client) {
 
 			if ok && subClientID != client.ID {
 				log.Printf("Notifying client %s that user %s is online", subClientID, client.UserID)
+
+				// ส่ง event แบบเก่า (backward compatible)
 				h.sendToClient(subClient, WSResponse{
-					Type:      TypeUserOnline,
+					Type:      TypeUserOnline,  // "user.online"
 					Data:      statusData,
-					Timestamp: time.Now(),
+					Timestamp: now,
+					Success:   true,
+				})
+
+				// ส่ง event แบบใหม่ (ตาม spec)
+				h.sendToClient(subClient, WSResponse{
+					Type:      TypeUserStatus,  // "user.status"
+					Data:      statusData,
+					Timestamp: now,
 					Success:   true,
 				})
 			}
@@ -359,7 +399,7 @@ func (h *Hub) registerClient(client *Client) {
 		h.sendToClient(client, WSResponse{
 			Type:      TypeUserOnline,
 			Data:      statusData,
-			Timestamp: time.Now(),
+			Timestamp: now,
 			Success:   true,
 		})
 	}
@@ -457,10 +497,20 @@ func (h *Hub) unregisterClient(client *Client) {
 
 	// แจ้งเตือนสถานะออฟไลน์
 	if isLastConnection {
+		// Update presence in Redis and Database
+		if h.presenceService != nil {
+			if err := h.presenceService.SetUserOffline(userID); err != nil {
+				log.Printf("Error setting user offline: %v", err)
+			}
+		}
+
+		now := time.Now()
 		statusData := map[string]interface{}{
-			"user_id":   userID,
-			"online":    false,
-			"timestamp": time.Now(),
+			"user_id":   userID.String(),
+			"status":    "offline",          // 🆕 เพิ่ม status field
+			"online":    false,              // ✅ เก็บไว้ (backward compatible)
+			"last_seen": now.Format(time.RFC3339),  // 🆕 เพิ่ม last_seen
+			"timestamp": now.Format(time.RFC3339),
 		}
 
 		// แจ้งไปยังผู้ใช้ทุกคนที่ subscribe สถานะของผู้ใช้นี้
@@ -475,10 +525,20 @@ func (h *Hub) unregisterClient(client *Client) {
 
 			if ok {
 				log.Printf("Notifying client %s that user %s is offline", subClientID, userID)
+
+				// ส่ง event แบบเก่า (backward compatible)
 				h.sendToClient(subClient, WSResponse{
-					Type:      TypeUserOffline,
+					Type:      TypeUserOffline,  // "user.offline"
 					Data:      statusData,
-					Timestamp: time.Now(),
+					Timestamp: now,
+					Success:   true,
+				})
+
+				// ส่ง event แบบใหม่ (ตาม spec)
+				h.sendToClient(subClient, WSResponse{
+					Type:      TypeUserStatus,  // "user.status"
+					Data:      statusData,
+					Timestamp: now,
 					Success:   true,
 				})
 			}
@@ -720,6 +780,11 @@ func (h *Hub) GetUserStatusSubscribers(userID uuid.UUID) map[string]interface{} 
 func (h *Hub) SetNotificationService(notificationService service.NotificationService) {
 	h.notificationService = notificationService
 	log.Println("NotificationService has been set in WebSocket Hub")
+}
+
+func (h *Hub) SetPresenceService(presenceService service.PresenceService) {
+	h.presenceService = presenceService
+	log.Println("PresenceService has been set in WebSocket Hub")
 }
 
 // ปรับปรุง subscribeToUserStatus ใน hub.go

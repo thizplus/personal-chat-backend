@@ -9,12 +9,22 @@ import (
 	"github.com/thizplus/gofiber-chat-api/domain/types"
 )
 
+// MemberRole represents the role of a member in a conversation
+type MemberRole string
+
+const (
+	RoleOwner  MemberRole = "owner"
+	RoleMember MemberRole = "member"
+	RoleAdmin  MemberRole = "admin"
+)
+
 // ConversationMember - สมาชิกในการสนทนา
 type ConversationMember struct {
 	ID                   uuid.UUID   `json:"id" gorm:"type:uuid;primary_key;default:uuid_generate_v4()"`
 	ConversationID       uuid.UUID   `json:"conversation_id" gorm:"type:uuid;not null"`
 	UserID               uuid.UUID   `json:"user_id" gorm:"type:uuid;not null"`
-	IsAdmin              bool        `json:"is_admin" gorm:"default:false"`
+	Role                 MemberRole  `json:"role" gorm:"type:varchar(20);default:'member';index"`
+	IsAdmin              bool        `json:"is_admin" gorm:"default:false"` // Deprecated: use Role instead
 	JoinedAt             time.Time   `json:"joined_at" gorm:"type:timestamp with time zone;default:now()"`
 	LastReadAt           *time.Time  `json:"last_read_at,omitempty" gorm:"type:timestamp with time zone"`
 	IsMuted              bool        `json:"is_muted" gorm:"default:false"`

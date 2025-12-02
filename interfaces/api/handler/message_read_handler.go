@@ -6,6 +6,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/thizplus/gofiber-chat-api/domain/repository"
 	"github.com/thizplus/gofiber-chat-api/domain/service"
 	"github.com/thizplus/gofiber-chat-api/interfaces/api/middleware"
 )
@@ -14,16 +15,19 @@ import (
 type MessageReadHandler struct {
 	messageReadService  service.MessageReadService
 	notificationService service.NotificationService
+	messageRepo         repository.MessageRepository
 }
 
 // NewMessageReadHandler สร้าง Handler ใหม่
 func NewMessageReadHandler(
 	messageReadService service.MessageReadService,
 	notificationService service.NotificationService,
+	messageRepo repository.MessageRepository,
 ) *MessageReadHandler {
 	return &MessageReadHandler{
 		messageReadService:  messageReadService,
 		notificationService: notificationService,
+		messageRepo:         messageRepo,
 	}
 }
 
@@ -75,23 +79,27 @@ func (h *MessageReadHandler) MarkMessageAsRead(c *fiber.Ctx) error {
 
 	// ถ้ามี notificationService ให้ส่งการแจ้งเตือนผ่าน WebSocket
 	if h.notificationService != nil && conversationID != uuid.Nil {
-		// ดึง read_count ปัจจุบันหลังจาก mark as read
-		reads, err := h.messageReadService.GetMessageReads(messageUUID, userUUID)
-		readCount := 1 // default
-		if err == nil && len(reads) > 0 {
-			readCount = len(reads)
-		}
+		// ดึงข้อมูลข้อความเพื่อหา senderID
+		message, err := h.messageRepo.GetByID(messageUUID)
+		if err == nil && message != nil && message.SenderID != nil {
+			// ดึง read_count ปัจจุบันหลังจาก mark as read
+			reads, err := h.messageReadService.GetMessageReads(messageUUID, userUUID)
+			readCount := 1 // default
+			if err == nil && len(reads) > 0 {
+				readCount = len(reads)
+			}
 
-		readData := map[string]interface{}{
-			"message_id":      messageUUID.String(),
-			"user_id":         userUUID.String(),
-			"conversation_id": conversationID.String(),
-			"read_at":         time.Now(),
-			"read_count":      readCount, // ⭐ เพิ่ม read_count
-		}
+			readData := map[string]interface{}{
+				"message_id":      messageUUID.String(),
+				"user_id":         userUUID.String(),
+				"conversation_id": conversationID.String(),
+				"read_at":         time.Now(),
+				"read_count":      readCount,
+			}
 
-		// ส่งการแจ้งเตือนไปยังสมาชิกในการสนทนา
-		h.notificationService.NotifyMessageRead(conversationID, readData)
+			// ✅ ส่ง message.read ไปยังผู้ส่งข้อความเท่านั้น (ไม่ broadcast ไปทุกคน)
+			h.notificationService.NotifyMessageReadToSender(*message.SenderID, readData)
+		}
 	}
 
 	return c.JSON(fiber.Map{
@@ -190,6 +198,14 @@ func (h *MessageReadHandler) MarkAllMessagesAsRead(c *fiber.Ctx) error {
 		})
 	}
 
+	// ✅ ดึงรายการข้อความที่ยังไม่ได้อ่าน ก่อน mark as read
+	unreadMessageIDs, err := h.messageReadService.GetUnreadMessageIDs(conversationUUID, userUUID)
+	if err != nil && err.Error() != "you are not a member of this conversation" {
+		// ถ้าเกิด error อื่นๆ ที่ไม่ใช่ permission ให้ log แต่ไม่ต้อง return error
+		// เพราะยังต้อง mark as read ต่อไป
+		unreadMessageIDs = []uuid.UUID{}
+	}
+
 	// เรียกใช้ service ด้วย UUID
 	markedCount, err := h.messageReadService.MarkAllMessagesAsRead(conversationUUID, userUUID)
 	if err != nil {
@@ -208,15 +224,54 @@ func (h *MessageReadHandler) MarkAllMessagesAsRead(c *fiber.Ctx) error {
 
 	// ถ้ามี notificationService ให้ส่งการแจ้งเตือนผ่าน WebSocket
 	if h.notificationService != nil && conversationUUID != uuid.Nil && markedCount > 0 {
-		// ⚠️ เนื่องจากเราไม่สามารถดึง message IDs ย้อนหลังได้หลัง mark แล้ว
-		// เราจะส่งแค่ conversation_id, user_id, และ marked_count
-		// Frontend จะต้องอัพเดทข้อความทั้งหมดใน conversation นั้นเอง
-		h.notificationService.NotifyMessageReadAll(conversationUUID, fiber.Map{
+		// 1. ✅ ส่ง message.read_all ไปยัง user ที่อ่านเท่านั้น (สำหรับ multi-device sync)
+		h.notificationService.NotifyMessageReadAllToUser(userUUID, fiber.Map{
 			"conversation_id": conversationUUID.String(),
 			"user_id":         userUUID.String(),
 			"read_at":         time.Now(),
 			"marked_count":    markedCount,
 		})
+
+		// 2. ✅ ส่ง message.read event ไปหาผู้ส่งแต่ละข้อความ
+		// เพื่อให้ Direct Chat และ Group Chat แสดง read receipt ถูกต้อง
+		notifiedSenders := make(map[uuid.UUID]bool)
+
+		for _, msgID := range unreadMessageIDs {
+			// ดึงข้อมูลข้อความ
+			message, err := h.messageRepo.GetByID(msgID)
+			if err != nil || message == nil || message.SenderID == nil {
+				continue
+			}
+
+			// ข้ามข้อความที่ส่งโดย user ที่อ่าน (ไม่ต้องส่งให้ตัวเอง)
+			if *message.SenderID == userUUID {
+				continue
+			}
+
+			senderID := *message.SenderID
+
+			// ถ้ายังไม่ได้ส่ง event ไปหา sender คนนี้
+			if !notifiedSenders[senderID] {
+				// ดึง read count ของข้อความนี้
+				reads, _ := h.messageReadService.GetMessageReads(msgID, userUUID)
+				readCount := 1
+				if len(reads) > 0 {
+					readCount = len(reads)
+				}
+
+				// ส่ง message.read event ไปหาผู้ส่ง
+				h.notificationService.NotifyMessageReadToSender(senderID, map[string]interface{}{
+					"message_id":      msgID.String(),
+					"user_id":         userUUID.String(),
+					"conversation_id": conversationUUID.String(),
+					"read_at":         time.Now(),
+					"read_count":      readCount,
+				})
+
+				// ทำเครื่องหมายว่าส่งไปแล้ว
+				notifiedSenders[senderID] = true
+			}
+		}
 	}
 
 	return c.JSON(fiber.Map{

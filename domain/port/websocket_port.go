@@ -9,6 +9,9 @@ type WebSocketPort interface {
 	BroadcastNewMessage(conversationID uuid.UUID, message interface{})
 	BroadcastMessageRead(conversationID uuid.UUID, message interface{})
 	BroadcastMessageReadAll(conversationID uuid.UUID, message interface{})
+	SendMessageReadToSender(senderID uuid.UUID, message interface{})        // ส่ง message.read ไปยังผู้ส่งข้อความเท่านั้น
+	SendMessageReadAllToUser(userID uuid.UUID, message interface{})          // ส่ง message.read_all ไปยัง user ที่อ่าน (multi-device sync)
+	BroadcastMessageDelivered(conversationID uuid.UUID, message interface{})
 	BroadcastMessageEdited(conversationID uuid.UUID, message interface{})
 	BroadcastMessageReply(conversationID uuid.UUID, message interface{})
 	BroadcastMessageDeleted(conversationID uuid.UUID, messageID uuid.UUID)
@@ -21,6 +24,13 @@ type WebSocketPort interface {
 	BroadcastUserAddedToConversation(conversationID uuid.UUID, userID uuid.UUID)
 	BroadcastUserRemovedFromConversation(userID, conversationID uuid.UUID)
 	BroadcastNewConversation(userID uuid.UUID, conversation interface{}) error
+
+	// Member role notifications
+	BroadcastMemberRoleChanged(conversationID uuid.UUID, data interface{})
+	BroadcastOwnershipTransferred(conversationID uuid.UUID, data interface{})
+
+	// Activity log notifications
+	BroadcastNewActivity(conversationID uuid.UUID, activity interface{})
 
 	// Business notifications
 	BroadcastBusinessBroadcast(userIDs []uuid.UUID, broadcast interface{})

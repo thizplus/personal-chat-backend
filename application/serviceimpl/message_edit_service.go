@@ -12,16 +12,29 @@ import (
 
 // EditMessage แก้ไขข้อความ
 func (s *messageService) EditMessage(messageID, userID uuid.UUID, newContent string) (*models.Message, error) {
+	fmt.Printf("🔧 [EditMessage Service] Starting. MessageID: %s, UserID: %s\n", messageID, userID)
+
+	// ป้องกัน nil pointer - ตรวจสอบ repository
+	if s.messageRepo == nil {
+		fmt.Printf("❌ [EditMessage Service] messageRepo is nil!\n")
+		return nil, fmt.Errorf("message repository is not initialized")
+	}
+
+	fmt.Printf("🔧 [EditMessage Service] Fetching message...\n")
 
 	// ดึงข้อมูลข้อความ
 	message, err := s.messageRepo.GetByID(messageID)
 	if err != nil {
+		fmt.Printf("❌ [EditMessage Service] GetByID error: %v\n", err)
 		return nil, fmt.Errorf("error fetching message: %w", err)
 	}
 
 	if message == nil {
+		fmt.Printf("❌ [EditMessage Service] Message not found\n")
 		return nil, fmt.Errorf("message not found")
 	}
+
+	fmt.Printf("🔧 [EditMessage Service] Message found. Type: %s, IsDeleted: %v\n", message.MessageType, message.IsDeleted)
 
 	// ตรวจสอบว่าข้อความถูกลบไปแล้วหรือไม่
 	if message.IsDeleted {
@@ -81,15 +94,26 @@ func (s *messageService) EditMessage(messageID, userID uuid.UUID, newContent str
 	message.IsEdited = true
 	message.EditCount++
 
-	if err := s.messageRepo.Update(message); err != nil {
+	// อัปเดตเฉพาะ fields ที่จำเป็น เพื่อหลีกเลี่ยง GORM panic กับ AlbumFiles
+	updates := map[string]interface{}{
+		"content":     newContent,
+		"updated_at":  now,
+		"is_edited":   true,
+		"edit_count":  message.EditCount,
+		"metadata":    message.Metadata,
+	}
+
+	if err := s.messageRepo.UpdateFields(message.ID, updates); err != nil {
 		return nil, fmt.Errorf("error updating message: %w", err)
 	}
 
 	// ตรวจสอบว่าเป็นข้อความล่าสุดของการสนทนาหรือไม่ และอัพเดทหากจำเป็น
-	lastMessage, err := s.messageRepo.GetLastMessageByConversation(message.ConversationID)
-	if err == nil && lastMessage != nil && lastMessage.ID == message.ID {
-		if err := s.messageRepo.UpdateConversationLastMessage(message.ConversationID, newContent, now); err != nil {
-			fmt.Printf("Error updating conversation last message: %v\n", err)
+	if s.conversationRepo != nil {
+		lastMessage, err := s.messageRepo.GetLastMessageByConversation(message.ConversationID)
+		if err == nil && lastMessage != nil && lastMessage.ID == message.ID {
+			if err := s.messageRepo.UpdateConversationLastMessage(message.ConversationID, newContent, now); err != nil {
+				fmt.Printf("Error updating conversation last message: %v\n", err)
+			}
 		}
 	}
 
@@ -127,7 +151,10 @@ func (s *messageService) GetMessageEditHistory(messageID, userID uuid.UUID) ([]*
 
 	// เพิ่มข้อมูลเพิ่มเติมให้แต่ละรายการ
 	for _, edit := range history {
-		// ดึงข้อมูลผู้แก้ไข
+		// ดึงข้อมูลผู้แก้ไข (ตรวจสอบ userRepo ไม่เป็น nil ก่อน)
+		if s.userRepo == nil {
+			continue
+		}
 		editor, err := s.userRepo.FindByID(edit.EditedBy)
 		if err == nil && editor != nil {
 			// สร้าง metadata ใหม่ที่มีข้อมูลเพิ่มเติม

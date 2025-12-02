@@ -200,6 +200,33 @@ func (s *userFriendshipService) GetPendingRequests(userID uuid.UUID) ([]*models.
 	return s.userFriendshipRepo.FindPendingRequestsByFriendID(userID)
 }
 
+// GetSentRequests ดึงคำขอเป็นเพื่อนที่ส่งไป
+func (s *userFriendshipService) GetSentRequests(userID uuid.UUID) ([]*models.UserFriendship, error) {
+	// ดึงคำขอเป็นเพื่อนที่ส่งโดยผู้ใช้นี้และยังเป็น pending อยู่
+	return s.userFriendshipRepo.FindPendingRequestsByUserID(userID)
+}
+
+// CancelFriendRequest ยกเลิกคำขอเป็นเพื่อนที่ส่งไป
+func (s *userFriendshipService) CancelFriendRequest(requestID, userID uuid.UUID) error {
+	// ดึงข้อมูล friendship
+	friendship, err := s.userFriendshipRepo.FindByID(requestID)
+	if err != nil {
+		return errors.New("friend request not found")
+	}
+
+	// ตรวจสอบว่าเป็นคำขอที่ส่งโดยผู้ใช้นี้และยังเป็น pending อยู่
+	if friendship.UserID != userID {
+		return errors.New("you can only cancel your own friend requests")
+	}
+
+	if friendship.Status != "pending" {
+		return errors.New("can only cancel pending friend requests")
+	}
+
+	// ลบคำขอ
+	return s.userFriendshipRepo.Delete(requestID)
+}
+
 // BlockUser บล็อกผู้ใช้
 func (s *userFriendshipService) BlockUser(userID, targetID uuid.UUID) error {
 	// ตรวจสอบว่ามีความสัมพันธ์อยู่แล้วหรือไม่
@@ -265,6 +292,28 @@ func (s *userFriendshipService) GetBlockedUsers(userID uuid.UUID) ([]*models.Use
 	return blockedUsers, nil
 }
 
+// GetBlockedByUsers ดึงรายชื่อผู้ใช้ที่บล็อกเรา
+func (s *userFriendshipService) GetBlockedByUsers(userID uuid.UUID) ([]*models.User, error) {
+	// ดึงความสัมพันธ์ที่เราถูกบล็อก (เราคือ friend_id)
+	blockedByFriendships, err := s.userFriendshipRepo.FindBlockedByUsers(userID)
+	if err != nil {
+		return nil, err
+	}
+
+	blockedByUsers := make([]*models.User, 0)
+	for _, friendship := range blockedByFriendships {
+		// ดึงข้อมูลของคนที่บล็อกเรา (UserID ไม่ใช่ FriendID)
+		blockerUser, err := s.userRepo.FindByID(friendship.UserID)
+		if err != nil {
+			continue
+		}
+
+		blockedByUsers = append(blockedByUsers, blockerUser)
+	}
+
+	return blockedByUsers, nil
+}
+
 // GetFriendshipStatus ตรวจสอบความสัมพันธ์ระหว่างผู้ใช้สองคน
 func (s *userFriendshipService) GetFriendshipStatus(userID, otherUserID uuid.UUID) (string, uuid.UUID, error) {
 	friendships, err := s.userFriendshipRepo.FindByUserIDOrFriendID(userID, otherUserID)
@@ -305,4 +354,42 @@ func (s *userFriendshipService) HasPendingRequest(userID, otherUserID uuid.UUID)
 	}
 
 	return true, direction, nil
+}
+
+// IsBlocked ตรวจสอบว่า userID บล็อค targetID หรือไม่
+func (s *userFriendshipService) IsBlocked(userID, targetID uuid.UUID) (bool, error) {
+	friendship, err := s.userFriendshipRepo.FindByUserIDAndFriendID(userID, targetID)
+	if err != nil {
+		return false, nil // ถ้าไม่เจอ record แสดงว่าไม่ได้บล็อค
+	}
+
+	return friendship.Status == "blocked", nil
+}
+
+// IsBlockedBy ตรวจสอบว่า userID ถูก targetID บล็อคหรือไม่
+func (s *userFriendshipService) IsBlockedBy(userID, targetID uuid.UUID) (bool, error) {
+	// ตรวจสอบว่า targetID บล็อค userID หรือไม่
+	friendship, err := s.userFriendshipRepo.FindByUserIDAndFriendID(targetID, userID)
+	if err != nil {
+		return false, nil // ถ้าไม่เจอ record แสดงว่าไม่ได้ถูกบล็อค
+	}
+
+	return friendship.Status == "blocked", nil
+}
+
+// CheckBlockStatus ตรวจสอบ block status แบบ bidirectional
+func (s *userFriendshipService) CheckBlockStatus(user1ID, user2ID uuid.UUID) (isBlocked bool, isBlockedBy bool, err error) {
+	// ตรวจสอบว่า user1 บล็อค user2 หรือไม่
+	isBlocked, err = s.IsBlocked(user1ID, user2ID)
+	if err != nil {
+		return false, false, err
+	}
+
+	// ตรวจสอบว่า user1 ถูก user2 บล็อคหรือไม่
+	isBlockedBy, err = s.IsBlockedBy(user1ID, user2ID)
+	if err != nil {
+		return false, false, err
+	}
+
+	return isBlocked, isBlockedBy, nil
 }

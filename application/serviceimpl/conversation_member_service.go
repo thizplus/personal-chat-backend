@@ -505,3 +505,80 @@ func (s *conversationMemberService) FindDirectConversationBetweenUsers(userID, f
 
 	return uuid.Nil, nil // ไม่พบการสนทนา direct ระหว่างผู้ใช้สองคน
 }
+
+// GetMember ดึงข้อมูลสมาชิกคนเดียว
+func (s *conversationMemberService) GetMember(conversationID, userID uuid.UUID) (*models.ConversationMember, error) {
+	member, err := s.conversationRepo.GetMember(conversationID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get member: %w", err)
+	}
+	if member == nil {
+		return nil, errors.New("member not found")
+	}
+	return member, nil
+}
+
+// ChangeRole เปลี่ยน role ของสมาชิก
+func (s *conversationMemberService) ChangeRole(conversationID, userID uuid.UUID, newRole models.MemberRole) (*models.ConversationMember, error) {
+	// ดึงข้อมูลสมาชิก
+	member, err := s.conversationRepo.GetMember(conversationID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get member: %w", err)
+	}
+	if member == nil {
+		return nil, errors.New("member not found")
+	}
+
+	// อัปเดต role
+	member.Role = newRole
+
+	// Sync is_admin field for backward compatibility
+	if newRole == models.RoleAdmin || newRole == models.RoleOwner {
+		member.IsAdmin = true
+	} else {
+		member.IsAdmin = false
+	}
+
+	// บันทึกการเปลี่ยนแปลง
+	if err := s.conversationRepo.UpdateMember(member); err != nil {
+		return nil, fmt.Errorf("failed to update member role: %w", err)
+	}
+
+	return member, nil
+}
+
+// HasPermission ตรวจสอบว่าผู้ใช้มีสิทธิ์ทำอะไรใน conversation หรือไม่
+func (s *conversationMemberService) HasPermission(conversationID, userID uuid.UUID, permission service.Permission) (bool, error) {
+	member, err := s.conversationRepo.GetMember(conversationID, userID)
+	if err != nil {
+		return false, fmt.Errorf("failed to get member: %w", err)
+	}
+	if member == nil {
+		return false, errors.New("user is not a member of this conversation")
+	}
+
+	switch permission {
+	case service.PermissionAddMember:
+		// Owner และ Admin เท่านั้น
+		return member.Role == models.RoleOwner || member.Role == models.RoleAdmin, nil
+
+	case service.PermissionRemoveMember:
+		// Owner และ Admin เท่านั้น
+		return member.Role == models.RoleOwner || member.Role == models.RoleAdmin, nil
+
+	case service.PermissionChangeRole:
+		// Owner เท่านั้น
+		return member.Role == models.RoleOwner, nil
+
+	case service.PermissionUpdateInfo:
+		// Owner และ Admin เท่านั้น
+		return member.Role == models.RoleOwner || member.Role == models.RoleAdmin, nil
+
+	case service.PermissionDeleteGroup:
+		// Owner เท่านั้น
+		return member.Role == models.RoleOwner, nil
+
+	default:
+		return false, errors.New("unknown permission")
+	}
+}

@@ -67,4 +67,7 @@ type ConversationService interface {
 
 	// DeleteConversation ลบการสนทนา (smart delete - hide for direct, leave for group)
 	DeleteConversation(conversationID, userID uuid.UUID) (string, error)
+
+	// TransferOwnership โอนความเป็นเจ้าของกลุ่มให้สมาชิกคนอื่น
+	TransferOwnership(conversationID, currentOwnerID, newOwnerID uuid.UUID) error
 }

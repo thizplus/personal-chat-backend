@@ -72,8 +72,12 @@ func SetupApp(container *di.Container) *fiber.App {
 		container.ConversationMemberHandler,
 		container.MessageHandler,
 		container.MessageReadHandler,
+		container.MentionHandler,
+		container.ScheduledMessageHandler,
 		container.StickerHandler,
+		container.NoteHandler,
 		container.SearchHandler,
+		container.PresenceHandler,
 	)
 
 	// เพิ่ม WebSocket routes แยกต่างหาก (หลังจาก SetupRoutes)

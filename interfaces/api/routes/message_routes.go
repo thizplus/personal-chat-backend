@@ -28,4 +28,16 @@ func SetupMessageRoutes(router fiber.Router, messageHandler *handler.MessageHand
 	conversations.Post("/:conversationId/messages/sticker", messageHandler.SendStickerMessage) //  [success] 10.2 การส่งข้อความประเภทสติกเกอร์ [Y]
 	conversations.Post("/:conversationId/messages/image", messageHandler.SendImageMessage)     //  [success] 10.3 การส่งข้อความประเภทรูปภาพ [Y]
 	conversations.Post("/:conversationId/messages/file", messageHandler.SendFileMessage)       //  [success] 10.4 การส่งข้อความประเภทไฟล์ [Y]
+	conversations.Post("/:conversationId/messages/bulk", messageHandler.SendBulkMessages)      //  [new] 10.10 การส่งหลายข้อความพร้อมกัน (Album) [Y]
+
+	// Pin messages
+	conversations.Put("/:conversationId/messages/:messageId/pin", messageHandler.PinMessage)       // ปักหมุดข้อความ
+	conversations.Delete("/:conversationId/messages/:messageId/pin", messageHandler.UnpinMessage)  // ยกเลิกการปักหมุด
+	conversations.Get("/:conversationId/pinned-messages", messageHandler.GetPinnedMessages)        // ดึงรายการข้อความที่ปักหมุด
+
+	// Search messages
+	messages.Get("/search", messageHandler.SearchMessages) // ค้นหาข้อความ
+
+	// Forward messages
+	messages.Post("/forward", messageHandler.ForwardMessages) // ส่งต่อข้อความ
 }

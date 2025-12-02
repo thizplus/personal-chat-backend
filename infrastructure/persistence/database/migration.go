@@ -26,6 +26,7 @@ func RunMigration(db *gorm.DB) error {
 		&models.UserStickerSet{},
 		&models.RefreshToken{},
 		&models.TokenBlacklist{},
+		&models.FileUpload{},
 
 		// โมเดลที่มี FK ไปหาตารางที่มี FK
 		&models.ConversationMember{},
@@ -37,6 +38,10 @@ func RunMigration(db *gorm.DB) error {
 		&models.MessageRead{},
 		&models.MessageEditHistory{},
 		&models.MessageDeleteHistory{},
+		&models.MessageMention{},
+		&models.ScheduledMessage{},
+		&models.Note{},
+		&models.GroupActivity{},
 	)
 
 	if err != nil {
@@ -64,6 +69,13 @@ func CreateIndices(db *gorm.DB) error {
 		return err
 	}
 
+	if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status)").Error; err != nil {
+		return err
+	}
+
+	if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_messages_conversation_status ON messages(conversation_id, status)").Error; err != nil {
+		return err
+	}
 
 	if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_conversation_members_user_id ON conversation_members(user_id)").Error; err != nil {
 		return err
@@ -94,7 +106,83 @@ func CreateIndices(db *gorm.DB) error {
 		return err
 	}
 
+	// Indices สำหรับ message_mentions (Task 1.2)
+	if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_mentions_user_time ON message_mentions(mentioned_user_id, created_at DESC)").Error; err != nil {
+		return err
+	}
+
+	if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_mentions_message ON message_mentions(message_id)").Error; err != nil {
+		return err
+	}
+
+	// Add unique constraint for message_mentions
+	if err := db.Exec("ALTER TABLE message_mentions DROP CONSTRAINT IF EXISTS unique_message_mention").Error; err != nil {
+		return err
+	}
+	if err := db.Exec("ALTER TABLE message_mentions ADD CONSTRAINT unique_message_mention UNIQUE (message_id, mentioned_user_id)").Error; err != nil {
+		return err
+	}
+
 	log.Println("สร้าง indices สำเร็จ")
+	return nil
+}
+
+// SetupFullTextSearch ตั้งค่า full-text search สำหรับ messages table
+func SetupFullTextSearch(db *gorm.DB) error {
+	log.Println("กำลังตั้งค่า full-text search...")
+
+	// Step 1: Add content_tsvector column if not exists
+	if err := db.Exec(`
+		ALTER TABLE messages
+		ADD COLUMN IF NOT EXISTS content_tsvector tsvector
+	`).Error; err != nil {
+		return err
+	}
+
+	// Step 2: Populate existing data
+	if err := db.Exec(`
+		UPDATE messages
+		SET content_tsvector = to_tsvector('english', COALESCE(content, ''))
+		WHERE content_tsvector IS NULL
+	`).Error; err != nil {
+		return err
+	}
+
+	// Step 3: Create GIN index
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_messages_content_tsvector
+		ON messages USING GIN (content_tsvector)
+	`).Error; err != nil {
+		return err
+	}
+
+	// Step 4: Create trigger function
+	if err := db.Exec(`
+		CREATE OR REPLACE FUNCTION messages_content_tsvector_update()
+		RETURNS trigger AS $$
+		BEGIN
+		  NEW.content_tsvector := to_tsvector('english', COALESCE(NEW.content, ''));
+		  RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql
+	`).Error; err != nil {
+		return err
+	}
+
+	// Step 5: Create trigger
+	if err := db.Exec(`DROP TRIGGER IF EXISTS tsvector_update ON messages`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`
+		CREATE TRIGGER tsvector_update
+		BEFORE INSERT OR UPDATE OF content ON messages
+		FOR EACH ROW
+		EXECUTE FUNCTION messages_content_tsvector_update()
+	`).Error; err != nil {
+		return err
+	}
+
+	log.Println("ตั้งค่า full-text search สำเร็จ")
 	return nil
 }
 
@@ -107,6 +195,11 @@ func SetupDatabase(db *gorm.DB) error {
 
 	// สร้าง indices
 	if err := CreateIndices(db); err != nil {
+		return err
+	}
+
+	// ตั้งค่า full-text search
+	if err := SetupFullTextSearch(db); err != nil {
 		return err
 	}
 

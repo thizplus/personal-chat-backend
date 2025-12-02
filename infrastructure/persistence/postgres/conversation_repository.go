@@ -798,3 +798,13 @@ func (r *conversationRepository) GetUserConversationsWithFilter(userID uuid.UUID
 	return conversations, int(total), nil
 }
 
+// Update อัปเดตการสนทนาทั้งหมด
+func (r *conversationRepository) Update(conversation *models.Conversation) error {
+	return r.db.Save(conversation).Error
+}
+
+// UpdateMember อัปเดตข้อมูลสมาชิก
+func (r *conversationRepository) UpdateMember(member *models.ConversationMember) error {
+	return r.db.Save(member).Error
+}
+

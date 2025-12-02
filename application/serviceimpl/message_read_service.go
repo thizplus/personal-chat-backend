@@ -215,3 +215,138 @@ func (s *messageReadService) GetUnreadCount(conversationID, userID uuid.UUID) (i
 
 	return len(unreadMessageIDs), nil
 }
+
+// MarkConversationAsRead ทำเครื่องหมายข้อความทั้งหมดจนถึง lastReadMessageID ว่าอ่านแล้ว
+func (s *messageReadService) MarkConversationAsRead(conversationID, userID, lastReadMessageID uuid.UUID) (int, error) {
+	// ตรวจสอบว่าผู้ใช้เป็นสมาชิกของการสนทนา
+	isMember, err := s.conversationRepo.IsMember(conversationID, userID)
+	if err != nil {
+		return 0, err
+	}
+
+	if !isMember {
+		return 0, errors.New("you are not a member of this conversation")
+	}
+
+	// ดึงข้อมูลของ lastReadMessage
+	lastReadMessage, err := s.messageRepo.GetByID(lastReadMessageID)
+	if err != nil {
+		return 0, err
+	}
+
+	if lastReadMessage == nil {
+		return 0, errors.New("message not found")
+	}
+
+	// ตรวจสอบว่าข้อความอยู่ในการสนทนานี้จริง
+	if lastReadMessage.ConversationID != conversationID {
+		return 0, errors.New("message does not belong to this conversation")
+	}
+
+	// ดึงข้อความทั้งหมดที่ยังไม่ได้อ่าน
+	unreadMessageIDs, err := s.messageReadRepo.GetUnreadMessageIDs(conversationID, userID)
+	if err != nil {
+		return 0, err
+	}
+
+	// มาร์คข้อความที่เก่ากว่าหรือเท่ากับ lastReadMessage เป็นอ่านแล้ว
+	now := time.Now()
+	markedCount := 0
+
+	for _, msgID := range unreadMessageIDs {
+		msg, err := s.messageRepo.GetByID(msgID)
+		if err != nil {
+			continue
+		}
+
+		// ข้ามข้อความของตัวเอง
+		if msg.SenderID != nil && *msg.SenderID == userID {
+			continue
+		}
+
+		// มาร์คเฉพาะข้อความที่เก่ากว่าหรือเท่ากับ lastReadMessage
+		if msg.CreatedAt.Before(lastReadMessage.CreatedAt) || msg.CreatedAt.Equal(lastReadMessage.CreatedAt) {
+			read := &models.MessageRead{
+				ID:        uuid.New(),
+				MessageID: msgID,
+				UserID:    userID,
+				ReadAt:    now,
+			}
+			if err := s.messageReadRepo.CreateRead(read); err == nil {
+				markedCount++
+			}
+		}
+	}
+
+	// อัปเดต last_read_at
+	if err := s.conversationRepo.UpdateMemberLastRead(conversationID, userID, lastReadMessage.CreatedAt); err != nil {
+		// บันทึกข้อผิดพลาดแต่ไม่หยุดการทำงาน
+	}
+
+	// คำนวณ unread count ที่เหลือ
+	remainingUnread := len(unreadMessageIDs) - markedCount
+	if remainingUnread < 0 {
+		remainingUnread = 0
+	}
+
+	return remainingUnread, nil
+}
+
+// GetUnreadCounts ดึงจำนวนข้อความที่ยังไม่ได้อ่านในทุกการสนทนา
+func (s *messageReadService) GetUnreadCounts(userID uuid.UUID) (map[uuid.UUID]int, int, error) {
+	// ดึงการสนทนาทั้งหมดที่ user เป็นสมาชิก (ใช้ limit สูงเพื่อดึงทั้งหมด)
+	conversations, _, err := s.conversationRepo.GetUserConversations(userID, 1000, 0)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	unreadCounts := make(map[uuid.UUID]int)
+	totalUnread := 0
+
+	for _, conversation := range conversations {
+		// ดึงจำนวนข้อความที่ยังไม่ได้อ่านในแต่ละการสนทนา
+		unreadMessageIDs, err := s.messageReadRepo.GetUnreadMessageIDs(conversation.ID, userID)
+		if err != nil {
+			continue
+		}
+
+		// นับเฉพาะข้อความที่ไม่ใช่ของตัวเอง
+		count := 0
+		for _, msgID := range unreadMessageIDs {
+			msg, err := s.messageRepo.GetByID(msgID)
+			if err != nil {
+				continue
+			}
+
+			// ข้ามข้อความของตัวเอง
+			if msg.SenderID != nil && *msg.SenderID == userID {
+				continue
+			}
+
+			count++
+		}
+
+		if count > 0 {
+			unreadCounts[conversation.ID] = count
+			totalUnread += count
+		}
+	}
+
+	return unreadCounts, totalUnread, nil
+}
+
+// GetUnreadMessageIDs ดึงรายการ ID ของข้อความที่ยังไม่ได้อ่าน
+func (s *messageReadService) GetUnreadMessageIDs(conversationID, userID uuid.UUID) ([]uuid.UUID, error) {
+	// ตรวจสอบว่าผู้ใช้เป็นสมาชิกของการสนทนา
+	isMember, err := s.conversationRepo.IsMember(conversationID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	if !isMember {
+		return nil, errors.New("you are not a member of this conversation")
+	}
+
+	// ดึงข้อความทั้งหมดที่ยังไม่ได้อ่าน
+	return s.messageReadRepo.GetUnreadMessageIDs(conversationID, userID)
+}

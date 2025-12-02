@@ -3,34 +3,55 @@ package configs
 
 import (
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/thizplus/gofiber-chat-api/domain/service"
 	"github.com/thizplus/gofiber-chat-api/infrastructure/storage/cloudinary"
+	"github.com/thizplus/gofiber-chat-api/infrastructure/storage/r2"
 )
 
 // SetupStorageService สร้าง FileStorageService ตาม environment
 func SetupStorageService() (service.FileStorageService, error) {
-	// ถ้าในอนาคตต้องการเปลี่ยนมาใช้ S3 หรือ storage อื่น สามารถตรวจสอบจาก env ได้
 	storageType := os.Getenv("STORAGE_TYPE")
 
-	// ถ้าไม่ได้กำหนด ใช้ Cloudinary เป็นค่าเริ่มต้น
-	if storageType == "" || storageType == "cloudinary" {
+	// Default to cloudinary if not specified
+	if storageType == "" {
+		storageType = "cloudinary"
+	}
+
+	log.Printf("Setting up storage service with type: %s", storageType)
+
+	switch storageType {
+	case "cloudinary":
 		return cloudinary.NewCloudinaryStorage(&cloudinary.CloudinaryConfig{
 			CloudName:    os.Getenv("CLOUDINARY_CLOUD_NAME"),
 			APIKey:       os.Getenv("CLOUDINARY_API_KEY"),
 			APISecret:    os.Getenv("CLOUDINARY_API_SECRET"),
 			UploadFolder: os.Getenv("CLOUDINARY_UPLOAD_FOLDER"),
 		})
-	}
+
+	case "r2":
+		return r2.NewR2Storage(&r2.R2Config{
+			AccountID:       os.Getenv("R2_ACCOUNT_ID"),
+			AccessKeyID:     os.Getenv("R2_ACCESS_KEY_ID"),
+			SecretAccessKey: os.Getenv("R2_SECRET_ACCESS_KEY"),
+			Bucket:          os.Getenv("R2_BUCKET"),
+			PublicURL:       os.Getenv("R2_PUBLIC_URL"),
+			Region:          os.Getenv("R2_REGION"),
+		})
 
 	// ในอนาคตอาจเพิ่ม case อื่นๆ เช่น "s3" หรือ "local"
-	// else if storageType == "s3" {
+	// case "s3":
 	//     return s3.NewS3Storage(&s3.S3Config{
 	//         ...
 	//     })
-	// }
+	// case "local":
+	//     return local.NewLocalStorage(&local.LocalConfig{
+	//         ...
+	//     })
 
-	// กรณีที่ระบุประเภทบริการจัดเก็บไฟล์ที่ไม่รองรับ
-	return nil, fmt.Errorf("ไม่รองรับบริการจัดเก็บไฟล์ประเภท: %s", storageType)
+	default:
+		return nil, fmt.Errorf("unsupported storage type: %s (supported: cloudinary, r2)", storageType)
+	}
 }

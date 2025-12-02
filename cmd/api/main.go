@@ -10,6 +10,7 @@ import (
 	"github.com/go-redis/redis/v8" // เพิ่ม import นี้
 	"github.com/joho/godotenv"
 	db "github.com/thizplus/gofiber-chat-api/infrastructure/persistence/database"
+	"github.com/thizplus/gofiber-chat-api/interfaces/websocket"
 	"github.com/thizplus/gofiber-chat-api/pkg/app"
 	"github.com/thizplus/gofiber-chat-api/pkg/configs"
 	"github.com/thizplus/gofiber-chat-api/pkg/di"
@@ -60,6 +61,10 @@ func main() {
 		log.Fatalf("ไม่สามารถสร้าง DI container ได้: %v", err)
 	}
 
+	// ตั้งค่า PresenceService ใน WebSocket Hub (ต้องทำก่อนเริ่ม Hub)
+	container.WebSocketHub.SetPresenceService(container.PresenceService)
+	log.Println("PresenceService has been set in WebSocket Hub")
+
 	// ลบโค้ดเริ่ม WebSocket Hub
 	// ctx, cancel := context.WithCancel(context.Background())
 	// defer cancel()
@@ -74,6 +79,17 @@ func main() {
 	go container.WebSocketHub.Run(ctx)
 	log.Println("WebSocket Hub started successfully")
 
+	// เริ่ม Typing Cache Cleanup Routine
+	websocket.StartTypingCacheCleanup()
+	log.Println("Typing cache cleanup routine started successfully")
+
+	// เริ่ม File Cleanup Scheduler
+	go container.FileCleanupScheduler.Start(ctx)
+	log.Println("File cleanup scheduler started successfully")
+
+	// เริ่ม Scheduled Message Processor
+	go container.ScheduledMessageProcessor.Start(ctx)
+	log.Println("Scheduled message processor started successfully")
 
 	// ตั้งค่าและสร้าง Fiber App
 	app := app.SetupApp(container)

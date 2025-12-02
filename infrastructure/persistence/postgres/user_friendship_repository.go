@@ -111,3 +111,12 @@ func (r *userFriendshipRepository) FindBlockedUsers(userID uuid.UUID) ([]*models
 	}
 	return userFriendships, nil
 }
+
+// FindBlockedByUsers หาคนที่บล็อกเรา (เราคือ friend_id ในบันทึก)
+func (r *userFriendshipRepository) FindBlockedByUsers(userID uuid.UUID) ([]*models.UserFriendship, error) {
+	var userFriendships []*models.UserFriendship
+	if err := r.db.Where("friend_id = ? AND status = ?", userID, "blocked").Find(&userFriendships).Error; err != nil {
+		return nil, err
+	}
+	return userFriendships, nil
+}

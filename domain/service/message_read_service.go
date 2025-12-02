@@ -19,4 +19,15 @@ type MessageReadService interface {
 
 	// GetUnreadCount ดึงจำนวนข้อความที่ยังไม่ได้อ่านในการสนทนา
 	GetUnreadCount(conversationID, userID uuid.UUID) (int, error)
+
+	// MarkConversationAsRead ทำเครื่องหมายข้อความทั้งหมดจนถึง lastReadMessageID ว่าอ่านแล้ว
+	// คืนค่า unread count ที่เหลือหลังจากทำเครื่องหมาย
+	MarkConversationAsRead(conversationID, userID, lastReadMessageID uuid.UUID) (int, error)
+
+	// GetUnreadCounts ดึงจำนวนข้อความที่ยังไม่ได้อ่านในทุกการสนทนา
+	// คืนค่า map[conversationID]unreadCount และ totalUnread
+	GetUnreadCounts(userID uuid.UUID) (map[uuid.UUID]int, int, error)
+
+	// GetUnreadMessageIDs ดึงรายการ ID ของข้อความที่ยังไม่ได้อ่าน
+	GetUnreadMessageIDs(conversationID, userID uuid.UUID) ([]uuid.UUID, error)
 }

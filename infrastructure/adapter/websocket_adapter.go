@@ -2,6 +2,8 @@
 package adapter
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/thizplus/gofiber-chat-api/domain/port"
 	"github.com/thizplus/gofiber-chat-api/interfaces/websocket"
@@ -50,19 +52,34 @@ func (a *WebSocketAdapter) BroadcastNewMessage(conversationID uuid.UUID, message
 	a.BroadcastToConversation(conversationID, "message.receive", message)
 }
 
-// BroadcastMessageRead ส่งการแจ้งเตือนว่าข้อความถูกอ่าน
+// BroadcastMessageRead ส่งการแจ้งเตือนว่าข้อความถูกอ่าน (เก่า - ไม่แนะนำให้ใช้ใน group chat)
 func (a *WebSocketAdapter) BroadcastMessageRead(conversationID uuid.UUID, message interface{}) {
 	a.BroadcastToConversation(conversationID, "message.read", message)
 }
 
-// BroadcastMessageReadAll ส่งการแจ้งเตือนว่าข้อความทั้งหมดถูกอ่าน
+// BroadcastMessageReadAll ส่งการแจ้งเตือนว่าข้อความทั้งหมดถูกอ่าน (เก่า - ไม่แนะนำให้ใช้)
 func (a *WebSocketAdapter) BroadcastMessageReadAll(conversationID uuid.UUID, message interface{}) {
 	a.BroadcastToConversation(conversationID, "message.read_all", message)
 }
 
+// SendMessageReadToSender ส่ง message.read event ไปยังผู้ส่งข้อความเท่านั้น (สำหรับ group chat)
+func (a *WebSocketAdapter) SendMessageReadToSender(senderID uuid.UUID, message interface{}) {
+	a.BroadcastToUser(senderID, "message.read", message)
+}
+
+// SendMessageReadAllToUser ส่ง message.read_all event ไปยัง user ที่อ่าน (สำหรับ multi-device sync)
+func (a *WebSocketAdapter) SendMessageReadAllToUser(userID uuid.UUID, message interface{}) {
+	a.BroadcastToUser(userID, "message.read_all", message)
+}
+
+// BroadcastMessageDelivered ส่งการแจ้งเตือนว่าข้อความถูกส่งสำเร็จ
+func (a *WebSocketAdapter) BroadcastMessageDelivered(conversationID uuid.UUID, message interface{}) {
+	a.BroadcastToConversation(conversationID, "message.delivered", message)
+}
+
 // BroadcastMessageEdited ส่งการแจ้งเตือนว่าข้อความถูกแก้ไข
 func (a *WebSocketAdapter) BroadcastMessageEdited(conversationID uuid.UUID, message interface{}) {
-	a.BroadcastToConversation(conversationID, "message.edit", message)
+	a.BroadcastToConversation(conversationID, "message.updated", message)
 }
 
 // BroadcastMessageReply ส่งการแจ้งเตือนว่าข้อความถูกตอบกลับ
@@ -199,49 +216,81 @@ func (a *WebSocketAdapter) BroadcastBusinessStatusChanged(businessID uuid.UUID, 
 
 // BroadcastFriendRequestReceived ส่งการแจ้งเตือนว่าได้รับคำขอเป็นเพื่อน
 func (a *WebSocketAdapter) BroadcastFriendRequestReceived(userID uuid.UUID, request interface{}) error {
-	a.BroadcastToUser(userID, "friend.request", request)
+	a.BroadcastToUser(userID, "friend_request.received", request)
 	return nil
 }
 
 // BroadcastFriendRequestAccepted ส่งการแจ้งเตือนว่าคำขอเป็นเพื่อนถูกยอมรับ
 func (a *WebSocketAdapter) BroadcastFriendRequestAccepted(userID uuid.UUID, friendship interface{}) error {
-	a.BroadcastToUser(userID, "friend.accept", friendship)
+	a.BroadcastToUser(userID, "friend_request.accepted", friendship)
 	return nil
 }
 
 // BroadcastFriendRequestRejected ส่งการแจ้งเตือนว่าคำขอเป็นเพื่อนถูกปฏิเสธ
 func (a *WebSocketAdapter) BroadcastFriendRequestRejected(userID uuid.UUID, friendship interface{}) error {
-	a.BroadcastToUser(userID, "friend.reject", friendship)
+	a.BroadcastToUser(userID, "friend_request.rejected", friendship)
 	return nil
 }
 
 // BroadcastFriendRemoved ส่งการแจ้งเตือนว่าเพื่อนถูกลบ
 func (a *WebSocketAdapter) BroadcastFriendRemoved(userID uuid.UUID, friendID uuid.UUID) {
-	data := map[string]interface{}{
-		"friend_id":  friendID,
-		"removed_by": userID,
-		"timestamp":  utils.Now(),
+	now := time.Now()
+
+	// ส่งถึง friendID ให้รู้ว่า userID ลบเขา
+	dataForFriend := map[string]interface{}{
+		"user_id":    userID.String(),
+		"removed_at": now.Format(time.RFC3339),
 	}
-	// แจ้งทั้งสองฝ่าย
-	a.BroadcastToUsers([]uuid.UUID{userID, friendID}, "friend.remove", data)
+	a.BroadcastToUser(friendID, "friend.removed", dataForFriend)
+
+	// ส่งถึง userID ให้รู้ว่าเขาลบ friendID
+	dataForUser := map[string]interface{}{
+		"user_id":    friendID.String(),
+		"removed_at": now.Format(time.RFC3339),
+	}
+	a.BroadcastToUser(userID, "friend.removed", dataForUser)
 }
 
 // BroadcastUserBlocked ส่งการแจ้งเตือนว่าผู้ใช้ถูกบล็อก
 func (a *WebSocketAdapter) BroadcastUserBlocked(blockerID uuid.UUID, blockedID uuid.UUID) {
-	data := map[string]interface{}{
-		"blocker_id": blockerID,
-		"blocked_at": utils.Now(),
+	now := utils.Now()
+
+	// ส่ง user.blocked event ไปยัง blocker (คนที่ทำการ block)
+	blockerData := map[string]interface{}{
+		"blocker_id":      blockerID.String(),
+		"blocked_user_id": blockedID.String(),
+		"blocked_at":      now,
 	}
-	a.BroadcastToUser(blockedID, "user.blocked", data)
+	a.BroadcastToUser(blockerID, "user.blocked", blockerData)
+
+	// ส่ง user.blocked_by event ไปยัง blocked user (คนที่ถูก block)
+	blockedData := map[string]interface{}{
+		"blocker_id":      blockerID.String(),
+		"blocked_user_id": blockedID.String(),
+		"blocked_at":      now,
+	}
+	a.BroadcastToUser(blockedID, "user.blocked_by", blockedData)
 }
 
 // BroadcastUserUnblocked ส่งการแจ้งเตือนว่าผู้ใช้ถูกปลดบล็อก
 func (a *WebSocketAdapter) BroadcastUserUnblocked(unblockerID uuid.UUID, unblockedID uuid.UUID) {
-	data := map[string]interface{}{
-		"unblocker_id": unblockerID,
-		"unblocked_at": utils.Now(),
+	now := utils.Now()
+
+	// ส่ง user.unblocked event ไปยัง unblocker (คนที่ทำการ unblock)
+	unblockerData := map[string]interface{}{
+		"unblocker_id":      unblockerID.String(),
+		"unblocked_user_id": unblockedID.String(),
+		"unblocked_at":      now,
 	}
-	a.BroadcastToUser(unblockedID, "user.unblocked", data)
+	a.BroadcastToUser(unblockerID, "user.unblocked", unblockerData)
+
+	// ส่ง user.unblocked_by event ไปยัง unblocked user (คนที่ถูก unblock)
+	unblockedData := map[string]interface{}{
+		"unblocker_id":      unblockerID.String(),
+		"unblocked_user_id": unblockedID.String(),
+		"unblocked_at":      now,
+	}
+	a.BroadcastToUser(unblockedID, "user.unblocked_by", unblockedData)
 }
 
 // BroadcastNotification ส่งการแจ้งเตือนทั่วไป
@@ -257,6 +306,23 @@ func (a *WebSocketAdapter) BroadcastAlert(userID uuid.UUID, alert interface{}) {
 // BroadcastSystemMessage ส่งข้อความจากระบบ
 func (a *WebSocketAdapter) BroadcastSystemMessage(userIDs []uuid.UUID, message interface{}) {
 	a.BroadcastToUsers(userIDs, "system.message", message)
+}
+
+// =========== Member Role Notifications ===========
+
+// BroadcastMemberRoleChanged ส่งการแจ้งเตือนการเปลี่ยน role ของสมาชิก
+func (a *WebSocketAdapter) BroadcastMemberRoleChanged(conversationID uuid.UUID, data interface{}) {
+	a.BroadcastToConversation(conversationID, "conversation.member_role_changed", data)
+}
+
+// BroadcastOwnershipTransferred ส่งการแจ้งเตือนการโอนความเป็นเจ้าของ
+func (a *WebSocketAdapter) BroadcastOwnershipTransferred(conversationID uuid.UUID, data interface{}) {
+	a.BroadcastToConversation(conversationID, "conversation.ownership_transferred", data)
+}
+
+// BroadcastNewActivity ส่งการแจ้งเตือน activity ใหม่ในกลุ่ม
+func (a *WebSocketAdapter) BroadcastNewActivity(conversationID uuid.UUID, activity interface{}) {
+	a.BroadcastToConversation(conversationID, "conversation.activity.new", activity)
 }
 
 // =========== Customer Profile Notifications ===========

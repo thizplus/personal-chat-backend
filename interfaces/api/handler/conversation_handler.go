@@ -9,6 +9,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/thizplus/gofiber-chat-api/domain/dto"
+	"github.com/thizplus/gofiber-chat-api/domain/repository"
 	"github.com/thizplus/gofiber-chat-api/domain/service"
 	"github.com/thizplus/gofiber-chat-api/domain/types"
 	"github.com/thizplus/gofiber-chat-api/interfaces/api/middleware"
@@ -17,18 +18,30 @@ import (
 
 // ConversationHandler จัดการ HTTP requests เกี่ยวกับการสนทนา
 type ConversationHandler struct {
-	conversationService           service.ConversationService
-	notificationService           service.NotificationService
+	conversationService  service.ConversationService
+	notificationService  service.NotificationService
+	messageReadService   service.MessageReadService
+	groupActivityService service.GroupActivityService
+	conversationRepo     repository.ConversationRepository
+	messageService       service.MessageService
 }
 
 // NewConversationHandler สร้าง handler ใหม่
 func NewConversationHandler(
 	conversationService service.ConversationService,
 	notificationService service.NotificationService,
+	messageReadService service.MessageReadService,
+	groupActivityService service.GroupActivityService,
+	conversationRepo repository.ConversationRepository,
+	messageService service.MessageService,
 ) *ConversationHandler {
 	return &ConversationHandler{
-		conversationService:           conversationService,
-		notificationService:           notificationService,
+		conversationService:  conversationService,
+		notificationService:  notificationService,
+		messageReadService:   messageReadService,
+		groupActivityService: groupActivityService,
+		conversationRepo:     conversationRepo,
+		messageService:       messageService,
 	}
 }
 
@@ -178,6 +191,10 @@ func (h *ConversationHandler) createGroupConversation(c *fiber.Ctx, userID uuid.
 		log.Printf("Failed to send group conversation created notification: %v", err)
 		// ไม่ return error เพราะการส่ง notification ล้มเหลวไม่ควรทำให้ API ล้มเหลว
 	}
+
+	// บันทึก activity log
+	conversationID, _ := uuid.Parse(conversation.ID.String())
+	h.groupActivityService.LogGroupCreated(conversationID, userID)
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"success":      true,
@@ -622,6 +639,13 @@ func (h *ConversationHandler) UpdateConversation(c *fiber.Ctx) error {
 		})
 	}
 
+	// ดึงข้อมูลเดิมก่อน update (สำหรับ activity log)
+	oldConversation, err := h.conversationRepo.GetByID(conversationID)
+	if err != nil {
+		// ถ้าดึงไม่ได้ ให้ทำต่อไปได้ แต่จะไม่มี activity log
+		oldConversation = nil
+	}
+
 	// รับข้อมูลที่ต้องการอัปเดต
 	var input struct {
 		Title   string `json:"title"`
@@ -679,6 +703,16 @@ func (h *ConversationHandler) UpdateConversation(c *fiber.Ctx) error {
 		notificationData["icon_url"] = iconURL
 	}
 	h.notificationService.NotifyConversationUpdated(conversationID, notificationData)
+
+	// บันทึก activity log
+	if oldConversation != nil {
+		if input.Title != "" && input.Title != oldConversation.Title {
+			h.groupActivityService.LogGroupNameChanged(conversationID, userID, oldConversation.Title, input.Title)
+		}
+		if input.IconURL != "" && input.IconURL != oldConversation.IconURL {
+			h.groupActivityService.LogGroupIconChanged(conversationID, userID, oldConversation.IconURL, input.IconURL)
+		}
+	}
 
 	// ส่งผลลัพธ์กลับ
 	return c.JSON(fiber.Map{
@@ -910,6 +944,304 @@ func (h *ConversationHandler) DeleteConversation(c *fiber.Ctx) error {
 			"conversation_id": conversationID.String(),
 			"action":          action,
 			"message":         message,
+		},
+	})
+}
+
+// MarkConversationAsRead ทำเครื่องหมายข้อความในการสนทนาว่าอ่านแล้ว
+func (h *ConversationHandler) MarkConversationAsRead(c *fiber.Ctx) error {
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"success": false,
+			"message": "Unauthorized: " + err.Error(),
+		})
+	}
+
+	conversationID, err := utils.ParseUUIDParam(c, "conversationId")
+	if err != nil {
+		return err
+	}
+
+	var input struct {
+		LastReadMessageID string `json:"last_read_message_id"`
+	}
+
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"message": "Invalid request data: " + err.Error(),
+		})
+	}
+
+	// แปลง lastReadMessageID เป็น UUID
+	lastReadMessageID, err := uuid.Parse(input.LastReadMessageID)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"message": "Invalid message ID format",
+		})
+	}
+
+	// Mark conversation as read
+	unreadCount, err := h.messageReadService.MarkConversationAsRead(conversationID, userID, lastReadMessageID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to mark conversation as read: " + err.Error(),
+		})
+	}
+
+	// Send WebSocket event
+	readData := fiber.Map{
+		"conversation_id":       conversationID.String(),
+		"user_id":              userID.String(),
+		"last_read_message_id": lastReadMessageID.String(),
+		"read_at":              time.Now().Format(time.RFC3339),
+	}
+	h.notificationService.NotifyMessageRead(conversationID, readData)
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"data": fiber.Map{
+			"conversation_id":       conversationID.String(),
+			"last_read_message_id": lastReadMessageID.String(),
+			"unread_count":         unreadCount,
+		},
+	})
+}
+
+// GetUnreadCounts ดึงจำนวนข้อความที่ยังไม่ได้อ่านในทุกการสนทนา
+func (h *ConversationHandler) GetUnreadCounts(c *fiber.Ctx) error {
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"success": false,
+			"message": "Unauthorized: " + err.Error(),
+		})
+	}
+
+	// Get unread counts
+	unreadCounts, totalUnread, err := h.messageReadService.GetUnreadCounts(userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to get unread counts: " + err.Error(),
+		})
+	}
+
+	// แปลงเป็น array สำหรับ JSON response
+	conversations := make([]fiber.Map, 0)
+	for conversationID, count := range unreadCounts {
+		conversations = append(conversations, fiber.Map{
+			"conversation_id": conversationID.String(),
+			"unread_count":    count,
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"data": fiber.Map{
+			"conversations": conversations,
+			"total_unread":  totalUnread,
+		},
+	})
+}
+
+// TransferOwnership โอนความเป็นเจ้าของกลุ่มให้สมาชิกคนอื่น
+// POST /conversations/:conversationId/transfer-ownership
+func (h *ConversationHandler) TransferOwnership(c *fiber.Ctx) error {
+	// 1. ดึงข้อมูลผู้ใช้จาก context (current owner)
+	currentOwnerID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"success": false,
+			"message": "Unauthorized: " + err.Error(),
+		})
+	}
+
+	// 2. ดึง conversation ID จาก parameter
+	conversationID, err := utils.ParseUUIDParam(c, "conversationId")
+	if err != nil {
+		return err
+	}
+
+	// 3. รับข้อมูล new owner ID จาก request body
+	var input struct {
+		NewOwnerID string `json:"new_owner_id"`
+	}
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"message": "Invalid request data: " + err.Error(),
+		})
+	}
+
+	// 4. Validate new owner ID
+	if input.NewOwnerID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"message": "new_owner_id is required",
+		})
+	}
+
+	newOwnerID, err := uuid.Parse(input.NewOwnerID)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"message": "Invalid new_owner_id format",
+		})
+	}
+
+	// 5. เรียก service เพื่อโอนความเป็นเจ้าของ
+	err = h.conversationService.TransferOwnership(conversationID, currentOwnerID, newOwnerID)
+	if err != nil {
+		// กำหนด status code ตามประเภทของ error
+		statusCode := fiber.StatusInternalServerError
+		errorMessage := err.Error()
+
+		switch errorMessage {
+		case "only the owner can transfer ownership":
+			statusCode = fiber.StatusForbidden
+		case "current owner is not a member of this conversation",
+			"new owner is not a member of this conversation":
+			statusCode = fiber.StatusNotFound
+		case "cannot transfer ownership to yourself",
+			"ownership transfer is only available for group conversations":
+			statusCode = fiber.StatusBadRequest
+		}
+
+		return c.Status(statusCode).JSON(fiber.Map{
+			"success": false,
+			"message": errorMessage,
+		})
+	}
+
+	// 6. ส่ง WebSocket notification แจ้งสมาชิกทุกคนในกลุ่ม
+	h.notificationService.NotifyOwnershipTransferred(conversationID, currentOwnerID, newOwnerID)
+
+	// บันทึก activity log
+	h.groupActivityService.LogOwnershipTransferred(conversationID, currentOwnerID, newOwnerID)
+
+	// 7. ส่งผลลัพธ์กลับ
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Ownership transferred successfully",
+		"data": fiber.Map{
+			"conversation_id":    conversationID.String(),
+			"previous_owner_id": currentOwnerID.String(),
+			"new_owner_id":      newOwnerID.String(),
+		},
+	})
+}
+
+// GetActivities ดึง activity log ของ conversation
+// GET /conversations/:conversationId/activities
+func (h *ConversationHandler) GetActivities(c *fiber.Ctx) error {
+	// 1. ดึงข้อมูลผู้ใช้จาก context
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"success": false,
+			"message": "Unauthorized: " + err.Error(),
+		})
+	}
+
+	// 2. ดึง conversation ID จาก parameter
+	conversationID, err := utils.ParseUUIDParam(c, "conversationId")
+	if err != nil {
+		return err
+	}
+
+	// 3. ดึง query parameters สำหรับ pagination และ filter
+	limit := c.QueryInt("limit", 20)
+	if limit > 100 {
+		limit = 100 // จำกัดสูงสุดที่ 100
+	}
+	offset := c.QueryInt("offset", 0)
+	activityType := c.Query("type", "") // ถ้าระบุ type จะ filter ตาม type นั้น
+
+	// 4. เรียกใช้ service พร้อม type filter
+	activities, total, err := h.groupActivityService.GetActivities(conversationID, userID, limit, offset, activityType)
+	if err != nil {
+		statusCode := fiber.StatusInternalServerError
+		if err.Error() == "user is not a member of this conversation" {
+			statusCode = fiber.StatusForbidden
+		}
+
+		return c.Status(statusCode).JSON(fiber.Map{
+			"success": false,
+			"message": err.Error(),
+		})
+	}
+
+	// 5. ส่งผลลัพธ์กลับ
+	return c.JSON(fiber.Map{
+		"success": true,
+		"data": fiber.Map{
+			"activities": activities,
+			"pagination": fiber.Map{
+				"total":  total,
+				"limit":  limit,
+				"offset": offset,
+			},
+		},
+	})
+}
+
+// GetMessagesByDate ดึงข้อความตามวันที่กำหนด (Jump to Date)
+func (h *ConversationHandler) GetMessagesByDate(c *fiber.Ctx) error {
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"success": false,
+			"message": "Unauthorized: " + err.Error(),
+		})
+	}
+
+	conversationID, err := utils.ParseUUIDParam(c, "conversationId")
+	if err != nil {
+		return err
+	}
+
+	// รับ date จาก query parameter
+	dateStr := c.Query("date")
+	if dateStr == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"message": "date query parameter is required (format: YYYY-MM-DD)",
+		})
+	}
+
+	limit := c.QueryInt("limit", 50)
+	if limit > 100 {
+		limit = 100
+	}
+
+	// ดึงข้อความตามวันที่
+	messages, total, hasMoreBefore, hasMoreAfter, err := h.messageService.GetMessagesByDate(conversationID, userID, dateStr, limit)
+	if err != nil {
+		statusCode := fiber.StatusInternalServerError
+		if err.Error() == "user is not a member of this conversation" {
+			statusCode = fiber.StatusForbidden
+		} else if err.Error() == "invalid date format, use YYYY-MM-DD" {
+			statusCode = fiber.StatusBadRequest
+		}
+
+		return c.Status(statusCode).JSON(fiber.Map{
+			"success": false,
+			"message": err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"data": fiber.Map{
+			"messages":        messages,
+			"date":            dateStr,
+			"total":           total,
+			"has_more_before": hasMoreBefore,
+			"has_more_after":  hasMoreAfter,
 		},
 	})
 }

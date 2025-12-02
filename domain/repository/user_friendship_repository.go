@@ -22,4 +22,5 @@ type UserFriendshipRepository interface {
 	UpdateStatus(id uuid.UUID, status string) error
 	DeleteByUserIDAndFriendID(userID, friendID uuid.UUID) error
 	FindBlockedUsers(userID uuid.UUID) ([]*models.UserFriendship, error)
+	FindBlockedByUsers(userID uuid.UUID) ([]*models.UserFriendship, error) // หาคนที่บล็อกเรา
 }

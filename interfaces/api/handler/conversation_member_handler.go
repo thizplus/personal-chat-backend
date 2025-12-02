@@ -5,23 +5,27 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/thizplus/gofiber-chat-api/domain/dto"
+	"github.com/thizplus/gofiber-chat-api/domain/models"
 	"github.com/thizplus/gofiber-chat-api/domain/service"
 )
 
 // ConversationMemberHandler จัดการคำขอสำหรับการจัดการสมาชิกในการสนทนา
 type ConversationMemberHandler struct {
-	memberService       service.ConversationMemberService
-	notificationService service.NotificationService
+	memberService        service.ConversationMemberService
+	notificationService  service.NotificationService
+	groupActivityService service.GroupActivityService
 }
 
 // NewConversationMemberHandler สร้าง handler ใหม่
 func NewConversationMemberHandler(
 	memberService service.ConversationMemberService,
 	notificationService service.NotificationService,
+	groupActivityService service.GroupActivityService,
 ) *ConversationMemberHandler {
 	return &ConversationMemberHandler{
-		memberService:       memberService,
-		notificationService: notificationService,
+		memberService:        memberService,
+		notificationService:  notificationService,
+		groupActivityService: groupActivityService,
 	}
 }
 
@@ -102,6 +106,9 @@ func (h *ConversationMemberHandler) AddConversationMember(c *fiber.Ctx) error {
 
 	// ส่ง WebSocket notification แจ้งว่ามีสมาชิกใหม่ถูกเพิ่มเข้ากลุ่ม
 	h.notificationService.NotifyUserAddedToConversation(conversationID, newMemberID)
+
+	// บันทึก activity log
+	h.groupActivityService.LogMemberAdded(conversationID, userID, newMemberID)
 
 	// 6. ส่งผลลัพธ์กลับ
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
@@ -350,6 +357,9 @@ func (h *ConversationMemberHandler) RemoveConversationMember(c *fiber.Ctx) error
 	// ส่ง WebSocket notification แจ้งว่าสมาชิกถูกลบออกจากกลุ่ม
 	h.notificationService.NotifyUserRemovedFromConversation(targetUserID, conversationID)
 
+	// บันทึก activity log
+	h.groupActivityService.LogMemberRemoved(conversationID, userID, targetUserID)
+
 	// 5. ส่งผลลัพธ์กลับ
 	return c.JSON(fiber.Map{
 		"success": true,
@@ -434,5 +444,124 @@ func (h *ConversationMemberHandler) ToggleMemberAdmin(c *fiber.Ctx) error {
 		"success":  true,
 		"message":  "Admin status updated successfully",
 		"is_admin": isAdmin,
+	})
+}
+
+// ChangeRole เปลี่ยน role ของสมาชิก (owner, admin, member)
+func (h *ConversationMemberHandler) ChangeRole(c *fiber.Ctx) error {
+	// 1. ดึงข้อมูลผู้ใช้จาก context
+	userID, err := uuid.Parse(c.Locals("userID").(string))
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"success": false,
+			"message": "Unauthorized",
+		})
+	}
+
+	// 2. ดึง conversation ID และ target user ID
+	conversationID, err := uuid.Parse(c.Params("conversationId"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"message": "Invalid conversation ID",
+		})
+	}
+
+	targetUserID, err := uuid.Parse(c.Params("userId"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"message": "Invalid user ID",
+		})
+	}
+
+	// 3. รับข้อมูล role ใหม่
+	var input struct {
+		Role string `json:"role"`
+	}
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"message": "Invalid request body",
+		})
+	}
+
+	// 4. Validate role
+	validRoles := []string{"owner", "admin", "member"}
+	isValidRole := false
+	for _, validRole := range validRoles {
+		if input.Role == validRole {
+			isValidRole = true
+			break
+		}
+	}
+	if !isValidRole {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"message": "Invalid role. Valid roles: owner, admin, member",
+		})
+	}
+
+	// 5. ตรวจสอบสิทธิ์ของผู้ที่ต้องการเปลี่ยน role
+	hasPermission, err := h.memberService.HasPermission(conversationID, userID, service.PermissionChangeRole)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to check permissions: " + err.Error(),
+		})
+	}
+	if !hasPermission {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"success": false,
+			"message": "Only the owner can change member roles",
+		})
+	}
+
+	// 6. ดึงข้อมูลสมาชิกเป้าหมาย
+	targetMember, err := h.memberService.GetMember(conversationID, targetUserID)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"success": false,
+			"message": "Target user is not a member of this conversation",
+		})
+	}
+
+	// 7. ไม่สามารถเปลี่ยน role ของ owner ได้
+	if targetMember.Role == "owner" && input.Role != "owner" {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"success": false,
+			"message": "Cannot change the owner's role. Transfer ownership first.",
+		})
+	}
+
+	// 8. เก็บ old role สำหรับ notification
+	oldRole := string(targetMember.Role)
+
+	// 9. เปลี่ยน role
+	newRole := models.MemberRole(input.Role)
+	updatedMember, err := h.memberService.ChangeRole(conversationID, targetUserID, newRole)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to change member role: " + err.Error(),
+		})
+	}
+
+	// 10. ส่ง WebSocket notification
+	h.notificationService.NotifyMemberRoleChanged(conversationID, targetUserID, oldRole, string(newRole), userID)
+
+	// บันทึก activity log
+	h.groupActivityService.LogMemberRoleChanged(conversationID, userID, targetUserID, oldRole, string(newRole))
+
+	// 11. ส่งผลลัพธ์กลับ
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Member role updated successfully",
+		"data": fiber.Map{
+			"conversation_id": conversationID,
+			"user_id":         targetUserID,
+			"old_role":        oldRole,
+			"new_role":        updatedMember.Role,
+		},
 	})
 }

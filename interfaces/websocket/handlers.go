@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,6 +20,8 @@ func (h *Hub) registerHandlers() {
 	h.handlers[string(TypeMessageDelete)] = &MessageDeleteHandler{hub: h}
 	h.handlers[string(TypeMessageRead)] = &MessageReadHandler{hub: h}
 	h.handlers[string(TypeMessageTyping)] = &MessageTypingHandler{hub: h}
+	h.handlers[string(TypeTypingStart)] = &TypingStartHandler{hub: h}  // 🆕 เพิ่ม
+	h.handlers[string(TypeTypingStop)] = &TypingStopHandler{hub: h}    // 🆕 เพิ่ม
 
 	// Conversation handlers
 	h.handlers[string(TypeConversationJoin)] = &ConversationJoinHandler{hub: h}
@@ -76,6 +79,28 @@ func (h *MessageSendHandler) Handle(ctx context.Context, client *Client, data js
 		return fmt.Errorf("user is not a member of this conversation")
 	}
 
+	// Check block status before sending message
+	if h.hub.conversationMemberService != nil && h.hub.userFriendshipService != nil {
+		members, _, err := h.hub.conversationMemberService.GetMembers(client.UserID, msgData.ConversationID, 1, 1000)
+		if err == nil {
+			for _, member := range members {
+				memberUserID, parseErr := uuid.Parse(member.UserID)
+				if parseErr != nil {
+					continue
+				}
+
+				if memberUserID == client.UserID {
+					continue // Skip self
+				}
+
+				isBlocked, isBlockedBy, blockErr := h.hub.userFriendshipService.CheckBlockStatus(client.UserID, memberUserID)
+				if blockErr == nil && (isBlocked || isBlockedBy) {
+					return fmt.Errorf("cannot send message: user is blocked")
+				}
+			}
+		}
+	}
+
 	// Prepare message data for notification
 	messageData := map[string]interface{}{
 		"conversation_id": msgData.ConversationID,
@@ -120,6 +145,21 @@ func (h *MessageSendHandler) ValidateData(data json.RawMessage) error {
 	return json.Unmarshal(data, &msgData)
 }
 
+// Global typing cache for auto-stop mechanism
+var (
+	typingCache      = sync.Map{} // key: "conv_id:user_id" -> *TypingStatus
+	lastTypingUpdate = sync.Map{} // key: "conv_id:user_id" -> time.Time (for rate limiting)
+)
+
+// TypingStatus tracks typing state with auto-stop timer
+type TypingStatus struct {
+	ConversationID uuid.UUID
+	UserID         uuid.UUID
+	IsTyping       bool
+	StartTime      time.Time
+	StopTimer      *time.Timer
+}
+
 // MessageTypingHandler handles typing indicators
 type MessageTypingHandler struct {
 	hub *Hub
@@ -136,21 +176,218 @@ func (h *MessageTypingHandler) Handle(ctx context.Context, client *Client, data 
 		return err
 	}
 
-	// Broadcast typing status to conversation members
-	typingInfo := map[string]interface{}{
-		"user_id":         client.UserID,
-		"conversation_id": typingData.ConversationID,
-		"is_typing":       typingData.IsTyping,
+	// Rate limiting: Max 1 event per second (only for typing start)
+	key := fmt.Sprintf("%s:%s", typingData.ConversationID.String(), client.UserID.String())
+	if typingData.IsTyping {
+		if lastTime, exists := lastTypingUpdate.Load(key); exists {
+			if time.Since(lastTime.(time.Time)) < 1*time.Second {
+				// Ignore - rate limited
+				return nil
+			}
+		}
+		lastTypingUpdate.Store(key, time.Now())
 	}
 
-	h.hub.BroadcastToConversation(typingData.ConversationID, TypeMessageTyping, typingInfo)
+	// Process typing with auto-stop logic
+	h.processTypingWithAutoStop(client.UserID, typingData.ConversationID, typingData.IsTyping)
 
 	return nil
+}
+
+// processTypingWithAutoStop handles typing events with auto-stop timer
+func (h *MessageTypingHandler) processTypingWithAutoStop(userID, conversationID uuid.UUID, isTyping bool) {
+	key := fmt.Sprintf("%s:%s", conversationID.String(), userID.String())
+
+	if isTyping {
+		// Cancel existing timer if any
+		if val, exists := typingCache.Load(key); exists {
+			status := val.(*TypingStatus)
+			if status.StopTimer != nil {
+				status.StopTimer.Stop()
+			}
+		}
+
+		// Create auto-stop timer (5 seconds)
+		timer := time.AfterFunc(5*time.Second, func() {
+			h.autoStopTyping(userID, conversationID)
+		})
+
+		// Store in cache
+		typingCache.Store(key, &TypingStatus{
+			ConversationID: conversationID,
+			UserID:         userID,
+			IsTyping:       true,
+			StartTime:      time.Now(),
+			StopTimer:      timer,
+		})
+
+		// Broadcast typing start
+		h.broadcastTyping(userID, conversationID, true)
+	} else {
+		// Manual stop - clear cache and timer
+		if val, exists := typingCache.Load(key); exists {
+			status := val.(*TypingStatus)
+			if status.StopTimer != nil {
+				status.StopTimer.Stop()
+			}
+			typingCache.Delete(key)
+		}
+
+		// Broadcast typing stop
+		h.broadcastTyping(userID, conversationID, false)
+	}
+}
+
+// autoStopTyping is called by timer after 5 seconds
+func (h *MessageTypingHandler) autoStopTyping(userID, conversationID uuid.UUID) {
+	key := fmt.Sprintf("%s:%s", conversationID.String(), userID.String())
+
+	// Remove from cache
+	if val, exists := typingCache.Load(key); exists {
+		status := val.(*TypingStatus)
+		if status.StopTimer != nil {
+			status.StopTimer.Stop()
+		}
+		typingCache.Delete(key)
+	}
+
+	// Broadcast typing stop
+	h.broadcastTyping(userID, conversationID, false)
+
+	log.Printf("Auto-stopped typing for user %s in conversation %s", userID, conversationID)
+}
+
+// broadcastTyping sends typing event to conversation members with user info
+func (h *MessageTypingHandler) broadcastTyping(userID, conversationID uuid.UUID, isTyping bool) {
+	// Query user info for username and display_name
+	var username, displayName string
+
+	if h.hub.userRepo != nil {
+		user, err := h.hub.userRepo.FindByID(userID)
+		if err != nil {
+			log.Printf("Error fetching user info for typing event: %v", err)
+			username = userID.String() // Fallback to user ID
+			displayName = ""
+		} else {
+			username = user.Username
+			if user.DisplayName != "" {
+				displayName = user.DisplayName
+			} else {
+				displayName = user.Username // Fallback to username
+			}
+		}
+	} else {
+		// Fallback if userRepo not available
+		username = userID.String()
+		displayName = ""
+	}
+
+	typingInfo := map[string]interface{}{
+		"user_id":         userID.String(),
+		"username":        username,          // 🆕 เพิ่ม
+		"display_name":    displayName,       // 🆕 เพิ่ม
+		"conversation_id": conversationID.String(),
+		"is_typing":       isTyping,
+	}
+
+	// ส่งทั้ง event แบบเก่าและใหม่
+	h.hub.BroadcastToConversation(conversationID, TypeMessageTyping, typingInfo) // เก่า
+	h.hub.BroadcastToConversation(conversationID, "user_typing", typingInfo)     // ใหม่ (ตาม spec)
 }
 
 func (h *MessageTypingHandler) ValidateData(data json.RawMessage) error {
 	var typingData TypingData
 	return json.Unmarshal(data, &typingData)
+}
+
+// TypingStartHandler handles typing_start events (new spec)
+type TypingStartHandler struct {
+	hub *Hub
+}
+
+func (h *TypingStartHandler) Handle(ctx context.Context, client *Client, data json.RawMessage) error {
+	var req struct {
+		ConversationID uuid.UUID `json:"conversation_id"`
+	}
+
+	if err := json.Unmarshal(data, &req); err != nil {
+		return err
+	}
+
+	// Reuse existing typing logic with isTyping=true
+	typingHandler := &MessageTypingHandler{hub: h.hub}
+	typingHandler.processTypingWithAutoStop(client.UserID, req.ConversationID, true)
+
+	return nil
+}
+
+func (h *TypingStartHandler) ValidateData(data json.RawMessage) error {
+	var req struct {
+		ConversationID uuid.UUID `json:"conversation_id"`
+	}
+	return json.Unmarshal(data, &req)
+}
+
+// TypingStopHandler handles typing_stop events (new spec)
+type TypingStopHandler struct {
+	hub *Hub
+}
+
+func (h *TypingStopHandler) Handle(ctx context.Context, client *Client, data json.RawMessage) error {
+	var req struct {
+		ConversationID uuid.UUID `json:"conversation_id"`
+	}
+
+	if err := json.Unmarshal(data, &req); err != nil {
+		return err
+	}
+
+	// Reuse existing typing logic with isTyping=false
+	typingHandler := &MessageTypingHandler{hub: h.hub}
+	typingHandler.processTypingWithAutoStop(client.UserID, req.ConversationID, false)
+
+	return nil
+}
+
+func (h *TypingStopHandler) ValidateData(data json.RawMessage) error {
+	var req struct {
+		ConversationID uuid.UUID `json:"conversation_id"`
+	}
+	return json.Unmarshal(data, &req)
+}
+
+// StartTypingCacheCleanup starts a background routine to cleanup stale typing cache
+// Call this once on application startup
+func StartTypingCacheCleanup() {
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+
+		log.Println("Typing cache cleanup routine started")
+
+		for range ticker.C {
+			now := time.Now()
+			cleanedCount := 0
+
+			typingCache.Range(func(key, value interface{}) bool {
+				status := value.(*TypingStatus)
+				// Remove stale entries (older than 10 seconds)
+				if now.Sub(status.StartTime) > 10*time.Second {
+					if status.StopTimer != nil {
+						status.StopTimer.Stop()
+					}
+					typingCache.Delete(key)
+					cleanedCount++
+					log.Printf("Cleaned up stale typing cache: %v", key)
+				}
+				return true
+			})
+
+			if cleanedCount > 0 {
+				log.Printf("Typing cache cleanup: removed %d stale entries", cleanedCount)
+			}
+		}
+	}()
 }
 
 // MessageReadHandler handles message read status
@@ -205,11 +442,10 @@ func (h *MessageEditHandler) Handle(ctx context.Context, client *Client, data js
 
 	// Broadcast edited message to conversation members
 	editInfo := map[string]interface{}{
-		"message_id":      editData.MessageID,
-		"conversation_id": editData.ConversationID,
-		"content":         editData.NewContent,
-		"edited_by":       client.UserID,
-		"edited_at":       time.Now(),
+		"message_id":      editData.MessageID.String(),
+		"conversation_id": editData.ConversationID.String(),
+		"new_content":     editData.NewContent,
+		"edited_at":       time.Now().Format(time.RFC3339),
 	}
 
 	h.hub.BroadcastToConversation(editData.ConversationID, TypeMessageEdit, editInfo)

@@ -271,6 +271,54 @@ func (h *UserFriendshipHandler) GetPendingRequests(c *fiber.Ctx) error {
 	})
 }
 
+// GetSentRequests ดึงคำขอเป็นเพื่อนที่ส่งไป
+func (h *UserFriendshipHandler) GetSentRequests(c *fiber.Ctx) error {
+	// ดึง User ID จาก token
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"success": false,
+			"message": "Unauthorized: " + err.Error(),
+		})
+	}
+
+	// ดึงคำขอเป็นเพื่อนที่ส่งไป
+	sentRequests, err := h.userFriendshipService.GetSentRequests(userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to fetch sent requests",
+			"error":   err.Error(),
+		})
+	}
+
+	// สร้างข้อมูลสำหรับส่งกลับ
+	var responseData []types.JSONB
+	for _, request := range sentRequests {
+		// ดึงข้อมูลผู้รับคำขอ
+		receiver, err := h.userService.GetUserByID(request.FriendID)
+		if err != nil {
+			continue
+		}
+
+		requestData := types.JSONB{
+			"request_id":        request.ID.String(),
+			"user_id":           receiver.ID.String(),
+			"username":          receiver.Username,
+			"display_name":      receiver.DisplayName,
+			"profile_image_url": receiver.ProfileImageURL,
+			"requested_at":      request.RequestedAt,
+		}
+
+		responseData = append(responseData, requestData)
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"data":    responseData,
+	})
+}
+
 // AcceptFriendRequest ยอมรับคำขอเป็นเพื่อน
 func (h *UserFriendshipHandler) AcceptFriendRequest(c *fiber.Ctx) error {
 	// ดึง User ID จาก token
@@ -372,6 +420,56 @@ func (h *UserFriendshipHandler) RejectFriendRequest(c *fiber.Ctx) error {
 			"requested_at": friendship.RequestedAt,
 			"updated_at":   friendship.UpdatedAt,
 		},
+	})
+}
+
+// CancelFriendRequest ยกเลิกคำขอเป็นเพื่อนที่ส่งไป
+func (h *UserFriendshipHandler) CancelFriendRequest(c *fiber.Ctx) error {
+	// ดึง User ID จาก token
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"success": false,
+			"message": "Unauthorized: " + err.Error(),
+		})
+	}
+
+	requestID, err := utils.ParseUUIDParam(c, "requestId")
+	if err != nil {
+		return err // error response ถูกจัดการในฟังก์ชันแล้ว
+	}
+
+	// ยกเลิกคำขอเป็นเพื่อน
+	err = h.userFriendshipService.CancelFriendRequest(requestID, userID)
+	if err != nil {
+		if strings.Contains(err.Error(), "friend request not found") {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"success": false,
+				"message": "Friend request not found",
+			})
+		}
+		if strings.Contains(err.Error(), "you can only cancel your own friend requests") {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"success": false,
+				"message": "You can only cancel your own friend requests",
+			})
+		}
+		if strings.Contains(err.Error(), "can only cancel pending friend requests") {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"success": false,
+				"message": "Can only cancel pending friend requests",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to cancel friend request",
+			"error":   err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Friend request cancelled successfully",
 	})
 }
 
@@ -517,5 +615,83 @@ func (h *UserFriendshipHandler) GetBlockedUsers(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"success": true,
 		"data":    responseData,
+	})
+}
+
+// GetBlockedByUsers ดึงรายชื่อผู้ใช้ที่บล็อกเรา
+func (h *UserFriendshipHandler) GetBlockedByUsers(c *fiber.Ctx) error {
+	// ดึง User ID จาก token
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"success": false,
+			"message": "Unauthorized: " + err.Error(),
+		})
+	}
+
+	// ดึงรายชื่อผู้ใช้ที่บล็อกเรา
+	blockedByUsers, err := h.userFriendshipService.GetBlockedByUsers(userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to fetch users who blocked you",
+			"error":   err.Error(),
+		})
+	}
+
+	// สร้างข้อมูลสำหรับส่งกลับ
+	var responseData []types.JSONB
+	for _, user := range blockedByUsers {
+		userData := types.JSONB{
+			"id":                user.ID.String(),
+			"username":          user.Username,
+			"display_name":      user.DisplayName,
+			"profile_image_url": user.ProfileImageURL,
+		}
+
+		responseData = append(responseData, userData)
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "รายการผู้ใช้ที่บล็อกคุณ",
+		"data":    responseData,
+	})
+}
+
+// GetBlockStatus ตรวจสอบสถานะการบล็อกกับผู้ใช้คนใดคนหนึ่ง
+func (h *UserFriendshipHandler) GetBlockStatus(c *fiber.Ctx) error {
+	// ดึง User ID จาก token
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"success": false,
+			"message": "Unauthorized: " + err.Error(),
+		})
+	}
+
+	// ดึง target user ID จาก URL parameter
+	targetUserID, err := utils.ParseUUIDParam(c, "userId")
+	if err != nil {
+		return err // error response ถูกจัดการในฟังก์ชันแล้ว
+	}
+
+	// ตรวจสอบ block status
+	isBlocked, isBlockedBy, err := h.userFriendshipService.CheckBlockStatus(userID, targetUserID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"message": "Failed to check block status",
+			"error":   err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"data": types.JSONB{
+			"user_id":       targetUserID.String(),
+			"is_blocked":    isBlocked,    // เราบล็อคคนนี้หรือไม่
+			"is_blocked_by": isBlockedBy,  // คนนี้บล็อคเราหรือไม่
+		},
 	})
 }

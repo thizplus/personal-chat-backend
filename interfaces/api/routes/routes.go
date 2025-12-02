@@ -19,12 +19,14 @@ func SetupRoutes(
 
 	messageHandler *handler.MessageHandler,
 	messageReadHandler *handler.MessageReadHandler,
-
+	mentionHandler *handler.MentionHandler,
+	scheduledMessageHandler *handler.ScheduledMessageHandler,
 
 	stickerHandler *handler.StickerHandler,
-
+	noteHandler *handler.NoteHandler,
 
 	searchHandler *handler.SearchHandler,
+	presenceHandler *handler.PresenceHandler,
 
 ) {
 	// สร้าง API group
@@ -49,13 +51,15 @@ func SetupRoutes(
 
 	SetupMessageRoutes(api, messageHandler)
 	SetupMessageReadRoutes(api, messageReadHandler)
-
+	SetupMentionRoutes(api, mentionHandler)
+	SetupScheduledMessageRoutes(api, scheduledMessageHandler)
 
 	SetupStickerRoutes(api, stickerHandler)
-
+	SetupNoteRoutes(api, noteHandler)
 
 
 
 	SetupSearchRoutes(api, searchHandler)
+	SetupPresenceRoutes(api, presenceHandler)
 
 }

@@ -358,12 +358,13 @@ func (s *conversationService) CreateGroupConversation(userID uuid.UUID, title, i
 		return nil, err
 	}
 
-	// 6. เพิ่มผู้สร้างเป็นสมาชิกและแอดมิน
+	// 6. เพิ่มผู้สร้างเป็นสมาชิกและ owner
 	creator := &models.ConversationMember{
 		ID:             uuid.New(),
 		ConversationID: conversation.ID,
 		UserID:         userID,
-		IsAdmin:        true,
+		Role:           models.RoleOwner, // ✅ ตั้งเป็น owner
+		IsAdmin:        true,             // Keep for backward compatibility
 		JoinedAt:       now,
 	}
 	if err := s.conversationRepo.AddMember(creator); err != nil {
@@ -378,6 +379,7 @@ func (s *conversationService) CreateGroupConversation(userID uuid.UUID, title, i
 			ID:             uuid.New(),
 			ConversationID: conversation.ID,
 			UserID:         memberID,
+			Role:           models.RoleMember, // ✅ ตั้งเป็น member
 			IsAdmin:        false,
 			JoinedAt:       now,
 		}
@@ -512,6 +514,7 @@ func (s *conversationService) ConvertToMessageDTO(msg *models.Message, userID uu
 		Content:           msg.Content,
 		MediaURL:          msg.MediaURL,
 		MediaThumbnailURL: msg.MediaThumbnailURL,
+		AlbumFiles:        msg.AlbumFiles,  // Copy album_files สำหรับ album messages
 		Metadata:          msg.Metadata,
 		CreatedAt:         msg.CreatedAt,
 		UpdatedAt:         msg.UpdatedAt,
@@ -1009,33 +1012,79 @@ func (s *conversationService) GetConversationMediaByType(conversationID, userID 
 	}
 
 	// แปลงเป็น DTO
-	items := make([]*dto.MediaItemDTO, 0, len(messages))
+	items := make([]*dto.MediaItemDTO, 0)
 	for _, msg := range messages {
-		item := &dto.MediaItemDTO{
-			MessageID:    msg.ID.String(),
-			MessageType:  msg.MessageType,
-			Content:      msg.Content,
-			MediaURL:     msg.MediaURL,
-			ThumbnailURL: msg.MediaThumbnailURL,
-			CreatedAt:    msg.CreatedAt,
-		}
+		// ตรวจสอบว่าเป็น album หรือ single media
+		if msg.MessageType == "album" {
+			// Album message: แยก files ออกมา
+			if msg.AlbumFiles != nil {
+				// Parse album_files (เป็น []interface{})
+				if filesArray, ok := msg.AlbumFiles.([]interface{}); ok {
+					for _, fileData := range filesArray {
+						if fileMap, ok := fileData.(map[string]interface{}); ok {
+							fileType, _ := fileMap["file_type"].(string)
 
-		// เพิ่มข้อมูลไฟล์ถ้าเป็น file type
-		if msg.MessageType == "file" && msg.Metadata != nil {
-			if fileName, ok := msg.Metadata["file_name"].(string); ok {
-				item.FileName = fileName
+							// เอาเฉพาะ file type ที่ต้องการ
+							if fileType == mediaType {
+								item := &dto.MediaItemDTO{
+									MessageID:    msg.ID.String(),
+									MessageType:  fileType, // ใช้ file_type จาก album_files
+									Content:      msg.Content,
+									CreatedAt:    msg.CreatedAt,
+									IsAlbum:      true, // บอกว่ามาจาก album
+								}
+
+								// ดึง media URLs
+								if mediaURL, ok := fileMap["media_url"].(string); ok {
+									item.MediaURL = mediaURL
+								}
+								if thumbnailURL, ok := fileMap["media_thumbnail_url"].(string); ok {
+									item.ThumbnailURL = thumbnailURL
+								}
+
+								// เพิ่มข้อมูล file (ถ้ามี)
+								if fileName, ok := fileMap["file_name"].(string); ok {
+									item.FileName = fileName
+								}
+								if fileSize, ok := fileMap["file_size"].(float64); ok {
+									item.FileSize = int64(fileSize)
+								}
+
+								items = append(items, item)
+							}
+						}
+					}
+				}
 			}
-			if fileSize, ok := msg.Metadata["file_size"].(float64); ok {
-				item.FileSize = int64(fileSize)
+		} else {
+			// Single media message (แบบเดิม)
+			item := &dto.MediaItemDTO{
+				MessageID:    msg.ID.String(),
+				MessageType:  msg.MessageType,
+				Content:      msg.Content,
+				MediaURL:     msg.MediaURL,
+				ThumbnailURL: msg.MediaThumbnailURL,
+				CreatedAt:    msg.CreatedAt,
+				IsAlbum:      false,
 			}
-		}
 
-		// เพิ่ม metadata สำหรับ link type
-		if mediaType == "link" {
-			item.Metadata = msg.Metadata
-		}
+			// เพิ่มข้อมูลไฟล์ถ้าเป็น file type
+			if msg.MessageType == "file" && msg.Metadata != nil {
+				if fileName, ok := msg.Metadata["file_name"].(string); ok {
+					item.FileName = fileName
+				}
+				if fileSize, ok := msg.Metadata["file_size"].(float64); ok {
+					item.FileSize = int64(fileSize)
+				}
+			}
 
-		items = append(items, item)
+			// เพิ่ม metadata สำหรับ link type
+			if mediaType == "link" {
+				item.Metadata = msg.Metadata
+			}
+
+			items = append(items, item)
+		}
 	}
 
 	// สร้าง pagination
@@ -1105,6 +1154,76 @@ func (s *conversationService) DeleteConversation(conversationID, userID uuid.UUI
 		}
 		return "hidden", nil
 	}
+}
+
+// TransferOwnership โอนความเป็นเจ้าของกลุ่มให้สมาชิกคนอื่น
+func (s *conversationService) TransferOwnership(conversationID, currentOwnerID, newOwnerID uuid.UUID) error {
+	// 1. ตรวจสอบว่าการสนทนานี้มีอยู่จริง
+	conversation, err := s.conversationRepo.GetByID(conversationID)
+	if err != nil {
+		return fmt.Errorf("failed to get conversation: %w", err)
+	}
+	if conversation == nil {
+		return errors.New("conversation not found")
+	}
+
+	// 2. ตรวจสอบว่าเป็น group conversation (ไม่สามารถโอนความเป็นเจ้าของใน direct chat ได้)
+	if conversation.Type != "group" {
+		return errors.New("ownership transfer is only available for group conversations")
+	}
+
+	// 3. ตรวจสอบว่า current owner เป็น owner จริงหรือไม่
+	currentOwner, err := s.conversationRepo.GetMember(conversationID, currentOwnerID)
+	if err != nil {
+		return fmt.Errorf("failed to get current owner: %w", err)
+	}
+	if currentOwner == nil {
+		return errors.New("current owner is not a member of this conversation")
+	}
+	if currentOwner.Role != models.RoleOwner {
+		return errors.New("only the owner can transfer ownership")
+	}
+
+	// 4. ตรวจสอบว่าผู้รับโอนเป็นสมาชิกของกลุ่มหรือไม่
+	newOwner, err := s.conversationRepo.GetMember(conversationID, newOwnerID)
+	if err != nil {
+		return fmt.Errorf("failed to get new owner: %w", err)
+	}
+	if newOwner == nil {
+		return errors.New("new owner is not a member of this conversation")
+	}
+
+	// 5. ไม่สามารถโอนให้ตัวเองได้
+	if currentOwnerID == newOwnerID {
+		return errors.New("cannot transfer ownership to yourself")
+	}
+
+	// 6. เปลี่ยน role ของ current owner เป็น admin
+	currentOwner.Role = models.RoleAdmin
+	currentOwner.IsAdmin = true
+	if err := s.conversationRepo.UpdateMember(currentOwner); err != nil {
+		return fmt.Errorf("failed to update current owner role: %w", err)
+	}
+
+	// 7. เปลี่ยน role ของ new owner เป็น owner
+	newOwner.Role = models.RoleOwner
+	newOwner.IsAdmin = true
+	if err := s.conversationRepo.UpdateMember(newOwner); err != nil {
+		// Rollback: เปลี่ยน current owner กลับเป็น owner
+		currentOwner.Role = models.RoleOwner
+		s.conversationRepo.UpdateMember(currentOwner)
+		return fmt.Errorf("failed to update new owner role: %w", err)
+	}
+
+	// 8. อัปเดต creator_id ของ conversation (optional - depends on your business logic)
+	conversation.CreatorID = &newOwnerID
+	if err := s.conversationRepo.Update(conversation); err != nil {
+		// ไม่ rollback เพราะ role ได้เปลี่ยนแล้ว
+		// แค่บันทึกลงใน log
+		fmt.Printf("Warning: Failed to update conversation creator_id: %v\n", err)
+	}
+
+	return nil
 }
 
 // application/serviceimpl/conversation_service.go

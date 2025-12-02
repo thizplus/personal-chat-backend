@@ -59,6 +59,24 @@ type ReplyMessageRequest struct {
 	Metadata          types.JSONB `json:"metadata,omitempty"`
 }
 
+// BulkMessageRequest สำหรับส่งหลายไฟล์ใน 1 message (Album/Group Message)
+type BulkMessageRequest struct {
+	Messages []BulkMessageItem `json:"messages" validate:"required,min=1,max=10,dive"`
+}
+
+// BulkMessageItem รายละเอียดของแต่ละไฟล์ในกลุ่ม
+type BulkMessageItem struct {
+	TempID            string      `json:"temp_id,omitempty"`
+	MessageType       string      `json:"message_type" validate:"required,oneof=image video file"`
+	MediaURL          string      `json:"media_url" validate:"required"`
+	MediaThumbnailURL string      `json:"media_thumbnail_url,omitempty"`
+	Caption           string      `json:"caption,omitempty"` // ใช้ได้เฉพาะ item แรก
+	FileName          string      `json:"file_name,omitempty"`
+	FileSize          int64       `json:"file_size,omitempty"`
+	FileType          string      `json:"file_type,omitempty"`
+	Metadata          types.JSONB `json:"metadata,omitempty"`
+}
+
 // BusinessMessageRequest สำหรับการส่งข้อความในนามธุรกิจ
 type BusinessTextMessageRequest struct {
 	Content   string      `json:"content" validate:"required"`
@@ -106,10 +124,13 @@ type MessageDTO struct {
 	SenderType        string     `json:"sender_type"` // user, business, system
 	SenderName        string     `json:"sender_name,omitempty"`
 	SenderAvatar      string     `json:"sender_avatar,omitempty"`
-	MessageType       string     `json:"message_type"` // text, image, file, sticker
+	MessageType       string     `json:"message_type"` // text, image, file, sticker, album
 	Content           string     `json:"content"`
 	MediaURL          string     `json:"media_url,omitempty"`
 	MediaThumbnailURL string     `json:"media_thumbnail_url,omitempty"`
+
+	// ข้อมูลเพิ่มเติมสำหรับอัลบั้ม
+	AlbumFiles interface{} `json:"album_files,omitempty"` // For album messages: [{"id": "uuid", "file_type": "image", "media_url": "...", "position": 0}]
 
 	// ข้อมูลเพิ่มเติมสำหรับไฟล์
 	FileName string `json:"file_name,omitempty"`
@@ -222,6 +243,12 @@ type MessageDeleteHistoryResponse struct {
 // MessageDeleteResponse สำหรับผลลัพธ์การลบข้อความ
 type MessageDeleteResponse struct {
 	GenericResponse
+}
+
+// BulkMessageResponse สำหรับผลลัพธ์การส่งข้อความแบบ bulk
+type BulkMessageResponse struct {
+	Messages []*MessageDTO `json:"messages"`
+	AlbumID  string        `json:"album_id"`
 }
 
 // ReplyInfoDTO ข้อมูลย่อของข้อความที่ถูกตอบกลับ

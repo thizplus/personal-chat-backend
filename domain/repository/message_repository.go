@@ -16,7 +16,9 @@ type MessageRepository interface {
 
 	// การสร้างและแก้ไขข้อความ
 	Create(message *models.Message) error
+	BulkCreate(messages []*models.Message) error
 	Update(message *models.Message) error
+	UpdateFields(messageID uuid.UUID, updates map[string]interface{}) error
 	Delete(id uuid.UUID) error
 
 	// การจัดการประวัติการแก้ไขและลบ
@@ -60,4 +62,19 @@ type MessageRepository interface {
 	GetMessageTypeSummary(conversationID uuid.UUID) (map[string]int64, error)
 	CountMessagesWithLinks(conversationID uuid.UUID) (int64, error)
 	GetMediaByType(conversationID uuid.UUID, messageType string, limit, offset int) ([]*models.Message, int64, error)
+
+	// Pin messages
+	PinMessage(messageID, userID uuid.UUID) error
+	UnpinMessage(messageID uuid.UUID) error
+	GetPinnedMessages(conversationID uuid.UUID, limit, offset int) ([]*models.Message, int64, error)
+
+	// Jump to date
+	FindByDateRange(conversationID uuid.UUID, startDate, endDate time.Time, limit int) ([]*models.Message, int64, error)
+
+	// Search messages (CURSOR-BASED)
+	// Returns: messages, nextCursor, hasMore, error
+	SearchMessages(searchQuery string, conversationID *uuid.UUID, limit int, cursor *string, direction string) ([]*models.Message, *string, bool, error)
+
+	// Bulk/Album messages
+	GetMessagesByAlbumID(albumID string) ([]*models.Message, error)
 }
