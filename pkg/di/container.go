@@ -119,6 +119,7 @@ func NewContainer(db *gorm.DB, storageService service.FileStorageService, redisC
 		container.ConversationRepo,
 		container.UserRepo,
 		container.MessageRepo,
+		container.MessageMentionRepo,
 	)
 	container.ConversationMemberService = serviceimpl.NewConversationMemberService(
 		container.ConversationRepo,

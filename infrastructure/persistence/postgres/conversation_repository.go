@@ -187,10 +187,11 @@ func (r *conversationRepository) GetConversationsByIDs(ids []uuid.UUID) ([]*mode
 }
 
 // UpdateLastMessage อัพเดต last_message สำหรับการสนทนา
-func (r *conversationRepository) UpdateLastMessage(conversationID uuid.UUID, text string, messageTime time.Time) error {
+func (r *conversationRepository) UpdateLastMessage(conversationID uuid.UUID, messageID uuid.UUID, text string, messageTime time.Time) error {
 	return r.db.Model(&models.Conversation{}).
 		Where("id = ?", conversationID).
 		Updates(types.JSONB{
+			"last_message_id":   messageID,
 			"last_message_text": text,
 			"last_message_at":   messageTime,
 			"updated_at":        time.Now(),

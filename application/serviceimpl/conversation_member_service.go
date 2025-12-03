@@ -89,8 +89,8 @@ func (s *conversationMemberService) AddMember(userID, conversationID, newMemberI
 	newMemberName, _ := s.getUserName(newMemberID)
 	systemMessage := adderName + " added " + newMemberName + " to the group"
 
-	s.createSystemMessage(conversationID, systemMessage)
-	s.conversationRepo.UpdateLastMessage(conversationID, systemMessage, now)
+	msgID, _ := s.createSystemMessage(conversationID, systemMessage)
+	s.conversationRepo.UpdateLastMessage(conversationID, msgID, systemMessage, now)
 
 	// 7. สร้าง DTO เพื่อส่งกลับ
 	memberDTO := &dto.MemberDTO{
@@ -214,8 +214,8 @@ func (s *conversationMemberService) BulkAddMembers(userID, conversationID uuid.U
 			systemMessage = adderName + " added " + fmt.Sprintf("%d members", len(addedMembers)) + " to the group"
 		}
 
-		s.createSystemMessage(conversationID, systemMessage)
-		s.conversationRepo.UpdateLastMessage(conversationID, systemMessage, now)
+		msgID, _ := s.createSystemMessage(conversationID, systemMessage)
+		s.conversationRepo.UpdateLastMessage(conversationID, msgID, systemMessage, now)
 	}
 
 	return addedMembers, failed, nil
@@ -358,8 +358,8 @@ func (s *conversationMemberService) RemoveMember(userID, conversationID, memberT
 		systemMessage = removerName + " removed " + removedName + " from the group"
 	}
 
-	s.createSystemMessage(conversationID, systemMessage)
-	s.conversationRepo.UpdateLastMessage(conversationID, systemMessage, now)
+	msgID, _ := s.createSystemMessage(conversationID, systemMessage)
+	s.conversationRepo.UpdateLastMessage(conversationID, msgID, systemMessage, now)
 
 	return nil
 }
@@ -426,8 +426,8 @@ func (s *conversationMemberService) ToggleAdminStatus(userID, conversationID, ta
 		systemMessage = actionUserName + " removed admin status from " + targetName
 	}
 
-	s.createSystemMessage(conversationID, systemMessage)
-	s.conversationRepo.UpdateLastMessage(conversationID, systemMessage, now)
+	msgID, _ := s.createSystemMessage(conversationID, systemMessage)
+	s.conversationRepo.UpdateLastMessage(conversationID, msgID, systemMessage, now)
 
 	return isAdmin, nil
 }
@@ -448,7 +448,7 @@ func (s *conversationMemberService) getUserName(userID uuid.UUID) (string, error
 }
 
 // createSystemMessage สร้างข้อความระบบในการสนทนา
-func (s *conversationMemberService) createSystemMessage(conversationID uuid.UUID, content string) error {
+func (s *conversationMemberService) createSystemMessage(conversationID uuid.UUID, content string) (uuid.UUID, error) {
 	systemMessage := &models.Message{
 		ID:             uuid.New(),
 		ConversationID: conversationID,
@@ -458,7 +458,8 @@ func (s *conversationMemberService) createSystemMessage(conversationID uuid.UUID
 		UpdatedAt:      time.Now(),
 	}
 
-	return s.messageRepo.Create(systemMessage)
+	err := s.messageRepo.Create(systemMessage)
+	return systemMessage.ID, err
 }
 
 // FindDirectConversationBetweenUsers ค้นหาการสนทนาแบบ direct ระหว่างผู้ใช้สองคน

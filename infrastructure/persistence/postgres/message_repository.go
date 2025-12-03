@@ -262,10 +262,11 @@ func (r *messageRepository) IsConversationAdmin(conversationID, userID uuid.UUID
 }
 
 // UpdateConversationLastMessage อัพเดตข้อความล่าสุดในการสนทนา
-func (r *messageRepository) UpdateConversationLastMessage(conversationID uuid.UUID, lastMessageText string, lastMessageAt time.Time) error {
+func (r *messageRepository) UpdateConversationLastMessage(conversationID uuid.UUID, lastMessageText string, lastMessageAt time.Time, messageID uuid.UUID) error {
 	return r.db.Model(&models.Conversation{}).
 		Where("id = ?", conversationID).
 		Updates(map[string]interface{}{
+			"last_message_id":   messageID,
 			"last_message_text": lastMessageText,
 			"last_message_at":   lastMessageAt,
 			"updated_at":        time.Now(),

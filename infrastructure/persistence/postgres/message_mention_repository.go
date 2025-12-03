@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/thizplus/gofiber-chat-api/domain/models"
@@ -110,4 +111,51 @@ func (r *messageMentionRepository) GetByMessageID(messageID uuid.UUID) ([]*model
 		Preload("MentionedUser").
 		Find(&mentions).Error
 	return mentions, err
+}
+
+// CountUnreadMentionsByConversation counts unread mentions in a conversation for a user
+func (r *messageMentionRepository) CountUnreadMentionsByConversation(
+	conversationID uuid.UUID,
+	userID uuid.UUID,
+	lastReadAt *time.Time,
+) (int, error) {
+	var count int64
+
+	// Base query: join with messages to get conversation context
+	query := r.db.Model(&models.MessageMention{}).
+		Joins("JOIN messages ON messages.id = message_mentions.message_id").
+		Where("messages.conversation_id = ?", conversationID).
+		Where("message_mentions.mentioned_user_id = ?", userID).
+		Where("messages.sender_id != ?", userID) // Don't count self-mentions
+
+	// If lastReadAt is provided, only count mentions after that time
+	if lastReadAt != nil {
+		query = query.Where("messages.created_at > ?", *lastReadAt)
+	}
+
+	err := query.Count(&count).Error
+	if err != nil {
+		return 0, err
+	}
+
+	return int(count), nil
+}
+
+// CheckLastMessageHasMention checks if a specific message has a mention for a user
+func (r *messageMentionRepository) CheckLastMessageHasMention(
+	messageID uuid.UUID,
+	userID uuid.UUID,
+) (bool, error) {
+	var count int64
+
+	err := r.db.Model(&models.MessageMention{}).
+		Where("message_id = ?", messageID).
+		Where("mentioned_user_id = ?", userID).
+		Count(&count).Error
+
+	if err != nil {
+		return false, err
+	}
+
+	return count > 0, nil
 }

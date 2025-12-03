@@ -104,7 +104,7 @@ func (s *messageService) SendTextMessage(conversationID, userID uuid.UUID, conte
 	}
 
 	// อัปเดตข้อความล่าสุดของการสนทนา
-	if err := s.messageRepo.UpdateConversationLastMessage(conversationID, content, now); err != nil {
+	if err := s.messageRepo.UpdateConversationLastMessage(conversationID, content, now, message.ID); err != nil {
 		fmt.Printf("Error updating conversation last message: %v, conversationID: %s", err, conversationID)
 	}
 
@@ -112,6 +112,9 @@ func (s *messageService) SendTextMessage(conversationID, userID uuid.UUID, conte
 	if mentions != nil {
 		s.notifyMentionedUsers(message, mentions, userID)
 	}
+
+	// ส่ง WebSocket event แจ้งการอัปเดต conversation พร้อม mention data
+	s.notifyConversationUpdated(conversationID, content, now, message.ID)
 
 	return message, nil
 }
@@ -196,9 +199,12 @@ func (s *messageService) SendStickerMessage(conversationID, userID, stickerID, s
 	}
 
 	// อัปเดตข้อความล่าสุดของการสนทนา
-	if err := s.messageRepo.UpdateConversationLastMessage(conversationID, "[Sticker]", now); err != nil {
+	if err := s.messageRepo.UpdateConversationLastMessage(conversationID, "[Sticker]", now, message.ID); err != nil {
 		fmt.Printf("Error updating conversation last message: %v, conversationID: %s", err, conversationID)
 	}
+
+	// ส่ง WebSocket event แจ้งการอัปเดต conversation พร้อม mention data
+	s.notifyConversationUpdated(conversationID, "[Sticker]", now, message.ID)
 
 	return message, nil
 }
@@ -272,9 +278,12 @@ func (s *messageService) SendImageMessage(conversationID, userID uuid.UUID, medi
 		lastMsgText = "[Image] " + caption
 	}
 
-	if err := s.messageRepo.UpdateConversationLastMessage(conversationID, lastMsgText, now); err != nil {
+	if err := s.messageRepo.UpdateConversationLastMessage(conversationID, lastMsgText, now, message.ID); err != nil {
 		fmt.Printf("Error updating conversation last message: %v, conversationID: %s", err, conversationID)
 	}
+
+	// ส่ง WebSocket event แจ้งการอัปเดต conversation พร้อม mention data
+	s.notifyConversationUpdated(conversationID, lastMsgText, now, message.ID)
 
 	return message, nil
 }
@@ -368,9 +377,12 @@ func (s *messageService) SendFileMessage(conversationID, userID uuid.UUID, media
 		lastMsgText = "[File] " + fileName
 	}
 
-	if err := s.messageRepo.UpdateConversationLastMessage(conversationID, lastMsgText, now); err != nil {
+	if err := s.messageRepo.UpdateConversationLastMessage(conversationID, lastMsgText, now, message.ID); err != nil {
 		fmt.Printf("Error updating conversation last message: %v, conversationID: %s", err, conversationID)
 	}
+
+	// ส่ง WebSocket event แจ้งการอัปเดต conversation พร้อม mention data
+	s.notifyConversationUpdated(conversationID, lastMsgText, now, message.ID)
 
 	return message, nil
 }
@@ -514,9 +526,12 @@ func (s *messageService) SendBulkMessages(conversationID, userID uuid.UUID, capt
 		lastMsgText = caption
 	}
 
-	if err := s.messageRepo.UpdateConversationLastMessage(conversationID, lastMsgText, now); err != nil {
+	if err := s.messageRepo.UpdateConversationLastMessage(conversationID, lastMsgText, now, message.ID); err != nil {
 		fmt.Printf("Error updating conversation last message: %v, conversationID: %s", err, conversationID)
 	}
+
+	// ส่ง WebSocket event แจ้งการอัปเดต conversation พร้อม mention data
+	s.notifyConversationUpdated(conversationID, lastMsgText, now, message.ID)
 
 	return message, nil
 }

@@ -38,7 +38,7 @@ type MessageRepository interface {
 	IsConversationAdmin(conversationID, userID uuid.UUID) (bool, error)
 
 	// อัพเดตข้อความล่าสุดในการสนทนา
-	UpdateConversationLastMessage(conversationID uuid.UUID, lastMessageText string, lastMessageAt time.Time) error
+	UpdateConversationLastMessage(conversationID uuid.UUID, lastMessageText string, lastMessageAt time.Time, messageID uuid.UUID) error
 
 	GetLastMessageByConversation(conversationID uuid.UUID) (*models.Message, error)
 	GetLastNonDeletedMessageByConversation(conversationID uuid.UUID) (*models.Message, error)

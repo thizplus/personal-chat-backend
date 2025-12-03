@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/thizplus/gofiber-chat-api/domain/models"
 )
@@ -27,4 +29,20 @@ type MessageMentionRepository interface {
 
 	// Get all mentions in a message
 	GetByMessageID(messageID uuid.UUID) ([]*models.MessageMention, error)
+
+	// CountUnreadMentionsByConversation counts unread mentions in a conversation for a user
+	// If lastReadAt is nil, counts all mentions where the user is not the sender
+	// If lastReadAt is provided, counts only mentions created after that time
+	CountUnreadMentionsByConversation(
+		conversationID uuid.UUID,
+		userID uuid.UUID,
+		lastReadAt *time.Time,
+	) (int, error)
+
+	// CheckLastMessageHasMention checks if a specific message has a mention for a user
+	// Returns true if the message mentions the user, false otherwise
+	CheckLastMessageHasMention(
+		messageID uuid.UUID,
+		userID uuid.UUID,
+	) (bool, error)
 }

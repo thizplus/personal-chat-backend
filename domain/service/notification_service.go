@@ -23,6 +23,7 @@ type NotificationService interface {
 	// Conversation notifications
 	NotifyConversationCreated(userIDs []uuid.UUID, conversation interface{}) error
 	NotifyConversationUpdated(conversationID uuid.UUID, update interface{})
+	NotifyConversationUpdatedToUser(userID uuid.UUID, update interface{}) // ส่ง conversation.update ไปยัง user คนใดคนหนึ่ง (personalized)
 	NotifyConversationDeleted(conversationID uuid.UUID, memberIDs []uuid.UUID)
 	NotifyUserAddedToConversation(conversationID uuid.UUID, userID uuid.UUID)
 	NotifyUserRemovedFromConversation(userID, conversationID uuid.UUID)

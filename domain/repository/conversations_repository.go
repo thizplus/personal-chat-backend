@@ -50,7 +50,7 @@ type ConversationRepository interface {
 	UpdateMemberAdmin(conversationID, userID uuid.UUID, isAdmin bool) error
 
 	// UpdateLastMessage อัพเดต last_message สำหรับการสนทนา
-	UpdateLastMessage(conversationID uuid.UUID, text string, messageTime time.Time) error
+	UpdateLastMessage(conversationID uuid.UUID, messageID uuid.UUID, text string, messageTime time.Time) error
 
 	// SetPinStatus กำหนดสถานะการปักหมุดของการสนทนา
 	SetPinStatus(conversationID, userID uuid.UUID, isPinned bool) error

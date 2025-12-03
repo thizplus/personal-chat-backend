@@ -104,8 +104,11 @@ func (s *messageService) ReplyToMessage(replyToID, userID uuid.UUID, messageType
 		lastMessageText = "[Message]"
 	}
 
-	if err := s.messageRepo.UpdateConversationLastMessage(replyToMessage.ConversationID, lastMessageText, now); err != nil {
+	if err := s.messageRepo.UpdateConversationLastMessage(replyToMessage.ConversationID, lastMessageText, now, message.ID); err != nil {
 		fmt.Printf("Error updating conversation last message: %v, conversationID: %s", err, replyToMessage.ConversationID.String())
+	} else {
+		// ส่ง WebSocket event แจ้งการอัปเดต conversation พร้อม mention data
+		s.notifyConversationUpdated(replyToMessage.ConversationID, lastMessageText, now, message.ID)
 	}
 
 	// อัปเดตเวลาอ่านล่าสุดของผู้ส่ง

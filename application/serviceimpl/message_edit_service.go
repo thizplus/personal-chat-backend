@@ -111,8 +111,11 @@ func (s *messageService) EditMessage(messageID, userID uuid.UUID, newContent str
 	if s.conversationRepo != nil {
 		lastMessage, err := s.messageRepo.GetLastMessageByConversation(message.ConversationID)
 		if err == nil && lastMessage != nil && lastMessage.ID == message.ID {
-			if err := s.messageRepo.UpdateConversationLastMessage(message.ConversationID, newContent, now); err != nil {
+			if err := s.messageRepo.UpdateConversationLastMessage(message.ConversationID, newContent, now, message.ID); err != nil {
 				fmt.Printf("Error updating conversation last message: %v\n", err)
+			} else {
+				// ส่ง WebSocket event แจ้งการอัปเดต conversation พร้อม mention data
+				s.notifyConversationUpdated(message.ConversationID, newContent, now, message.ID)
 			}
 		}
 	}

@@ -19,6 +19,7 @@ type Conversation struct {
 	UpdatedAt       time.Time   `json:"updated_at" gorm:"type:timestamp with time zone;default:now()"`
 	LastMessageText string      `json:"last_message_text,omitempty" gorm:"type:text"`
 	LastMessageAt   *time.Time  `json:"last_message_at,omitempty" gorm:"type:timestamp with time zone"`
+	LastMessageID   *uuid.UUID  `json:"last_message_id,omitempty" gorm:"type:uuid"`
 	CreatorID       *uuid.UUID  `json:"creator_id,omitempty" gorm:"type:uuid"`
 	IsActive        bool        `json:"is_active" gorm:"default:true"`
 	Metadata        types.JSONB `json:"metadata,omitempty" gorm:"type:jsonb;default:'{}'::jsonb"`

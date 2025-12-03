@@ -108,13 +108,19 @@ func (s *messageService) DeleteMessage(messageID, userID uuid.UUID) error {
 				lastMessageText = "[Message]"
 			}
 
-			if err := s.messageRepo.UpdateConversationLastMessage(message.ConversationID, lastMessageText, newLastMessage.CreatedAt); err != nil {
+			if err := s.messageRepo.UpdateConversationLastMessage(message.ConversationID, lastMessageText, newLastMessage.CreatedAt, newLastMessage.ID); err != nil {
 				fmt.Printf("Error updating conversation last message: %v\n", err)
+			} else {
+				// ส่ง WebSocket event แจ้งการอัปเดต conversation พร้อม mention data
+				s.notifyConversationUpdated(message.ConversationID, lastMessageText, newLastMessage.CreatedAt, newLastMessage.ID)
 			}
 		} else {
-			// ไม่มีข้อความเหลือแล้ว
-			if err := s.messageRepo.UpdateConversationLastMessage(message.ConversationID, "[No messages]", now); err != nil {
+			// ไม่มีข้อความเหลือแล้ว - ใช้ zero UUID สำหรับกรณีไม่มีข้อความ
+			if err := s.messageRepo.UpdateConversationLastMessage(message.ConversationID, "[No messages]", now, uuid.Nil); err != nil {
 				fmt.Printf("Error updating conversation last message: %v\n", err)
+			} else {
+				// ส่ง WebSocket event แจ้งการอัปเดต conversation พร้อม mention data
+				s.notifyConversationUpdated(message.ConversationID, "[No messages]", now, uuid.Nil)
 			}
 		}
 	}

@@ -95,6 +95,12 @@ type ConversationDTO struct {
 	Metadata        types.JSONB `json:"metadata,omitempty"` // เพิ่มฟิลด์นี้
 	MemberCount     int         `json:"member_count"`
 	UnreadCount     int         `json:"unread_count"`
+
+	// Mention-related fields
+	HasUnreadMention      bool `json:"has_unread_mention"`
+	UnreadMentionCount    int  `json:"unread_mention_count"`
+	LastMessageHasMention bool `json:"last_message_has_mention"`
+
 	IsPinned        bool        `json:"is_pinned"`
 	IsMuted         bool        `json:"is_muted"`
 	IsHidden        bool        `json:"is_hidden"`

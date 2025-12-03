@@ -5,6 +5,9 @@ import "github.com/google/uuid"
 
 // WebSocketPort เป็น interface สำหรับส่งข้อมูลผ่าน WebSocket
 type WebSocketPort interface {
+	// Core WebSocket methods
+	BroadcastToUser(userID uuid.UUID, messageType string, data interface{}) // ส่งข้อความไปยังผู้ใช้คนใดคนหนึ่ง
+
 	// Message notifications
 	BroadcastNewMessage(conversationID uuid.UUID, message interface{})
 	BroadcastMessageRead(conversationID uuid.UUID, message interface{})
