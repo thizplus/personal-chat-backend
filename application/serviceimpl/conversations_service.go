@@ -16,9 +16,10 @@ import (
 )
 
 type conversationService struct {
-	conversationRepo    repository.ConversationRepository
-	userRepo            repository.UserRepository
-	messageRepo         repository.MessageRepository
+	conversationRepo repository.ConversationRepository
+	userRepo         repository.UserRepository
+	messageRepo      repository.MessageRepository
+	mentionRepo      repository.MessageMentionRepository
 }
 
 // NewConversationService สร้าง service ใหม่
@@ -26,12 +27,13 @@ func NewConversationService(
 	conversationRepo repository.ConversationRepository,
 	userRepo repository.UserRepository,
 	messageRepo repository.MessageRepository,
-
+	mentionRepo repository.MessageMentionRepository,
 ) service.ConversationService {
 	return &conversationService{
-		conversationRepo:    conversationRepo,
-		userRepo:            userRepo,
-		messageRepo:         messageRepo,
+		conversationRepo: conversationRepo,
+		userRepo:         userRepo,
+		messageRepo:      messageRepo,
+		mentionRepo:      mentionRepo,
 	}
 }
 
@@ -218,7 +220,9 @@ func (s *conversationService) convertToConversationDTO(conversation *models.Conv
 
 		// คำนวณ unread_count
 		var unreadCount int
+		var lastReadAt *time.Time
 		if member.LastReadAt != nil {
+			lastReadAt = member.LastReadAt
 			messages, err := s.messageRepo.GetMessagesAfterTime(
 				conversation.ID, *member.LastReadAt, userID)
 			if err == nil {
@@ -233,10 +237,41 @@ func (s *conversationService) convertToConversationDTO(conversation *models.Conv
 		}
 
 		convDTO.UnreadCount = unreadCount
+
+		// คำนวณ mention-related fields
+		var hasMention bool
+		var mentionCount int
+
+		// 1. นับ unread mentions
+		mentionCount, err = s.mentionRepo.CountUnreadMentionsByConversation(
+			conversation.ID,
+			userID,
+			lastReadAt,
+		)
+		if err == nil && mentionCount > 0 {
+			hasMention = true
+		}
+
+		convDTO.HasUnreadMention = hasMention
+		convDTO.UnreadMentionCount = mentionCount
+
+		// 2. ตรวจสอบว่า last message มี mention หรือไม่
+		var lastMessageHasMention bool
+		if conversation.LastMessageID != nil {
+			lastMessageHasMention, _ = s.mentionRepo.CheckLastMessageHasMention(
+				*conversation.LastMessageID,
+				userID,
+			)
+		}
+
+		convDTO.LastMessageHasMention = lastMessageHasMention
 	} else {
 		convDTO.IsPinned = false
 		convDTO.IsMuted = false
 		convDTO.UnreadCount = 0
+		convDTO.HasUnreadMention = false
+		convDTO.UnreadMentionCount = 0
+		convDTO.LastMessageHasMention = false
 	}
 
 	// จำนวนสมาชิก
@@ -547,6 +582,46 @@ func (s *conversationService) ConvertToMessageDTO(msg *models.Message, userID uu
 				messageDTO.StickerSetID = &stickerSetID
 			}
 		}
+	}
+
+	// เพิ่มข้อมูล Forward (ถ้ามี)
+	messageDTO.IsForwarded = msg.IsForwarded
+	if msg.IsForwarded && msg.ForwardedFrom != nil {
+		forwardedFrom := &dto.ForwardedFromDTO{}
+
+		if msgID, ok := msg.ForwardedFrom["message_id"].(string); ok {
+			forwardedFrom.MessageID = msgID
+		}
+		if senderID, ok := msg.ForwardedFrom["sender_id"].(string); ok {
+			forwardedFrom.SenderID = senderID
+		}
+		if senderName, ok := msg.ForwardedFrom["sender_name"].(string); ok {
+			forwardedFrom.SenderName = senderName
+		}
+
+		// Fallback: ถ้า sender_name ว่าง ให้ดึงจาก database (สำหรับข้อความเก่า)
+		if forwardedFrom.SenderName == "" && forwardedFrom.SenderID != "" {
+			if senderUUID, err := uuid.Parse(forwardedFrom.SenderID); err == nil {
+				if originalSender, err := s.userRepo.FindByID(senderUUID); err == nil && originalSender != nil {
+					if originalSender.DisplayName != "" {
+						forwardedFrom.SenderName = originalSender.DisplayName
+					} else {
+						forwardedFrom.SenderName = originalSender.Username
+					}
+				}
+			}
+		}
+
+		if convID, ok := msg.ForwardedFrom["conversation_id"].(string); ok {
+			forwardedFrom.ConversationID = convID
+		}
+		if timestamp, ok := msg.ForwardedFrom["original_timestamp"].(string); ok {
+			if parsedTime, err := time.Parse(time.RFC3339, timestamp); err == nil {
+				forwardedFrom.OriginalTimestamp = parsedTime
+			}
+		}
+
+		messageDTO.ForwardedFrom = forwardedFrom
 	}
 
 	// 1. เพิ่มข้อมูลผู้ส่ง

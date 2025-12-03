@@ -170,6 +170,32 @@ func (s *notificationService) NotifyNewMessage(conversationID uuid.UUID, message
 		}
 	}
 
+	// เพิ่มข้อมูล Forward (ถ้ามี)
+	messageDTO.IsForwarded = message.IsForwarded
+	if message.IsForwarded && message.ForwardedFrom != nil {
+		forwardedFrom := &dto.ForwardedFromDTO{}
+
+		if msgID, ok := message.ForwardedFrom["message_id"].(string); ok {
+			forwardedFrom.MessageID = msgID
+		}
+		if senderID, ok := message.ForwardedFrom["sender_id"].(string); ok {
+			forwardedFrom.SenderID = senderID
+		}
+		if senderName, ok := message.ForwardedFrom["sender_name"].(string); ok {
+			forwardedFrom.SenderName = senderName
+		}
+		if convID, ok := message.ForwardedFrom["conversation_id"].(string); ok {
+			forwardedFrom.ConversationID = convID
+		}
+		if timestamp, ok := message.ForwardedFrom["original_timestamp"].(string); ok {
+			if parsedTime, err := time.Parse(time.RFC3339, timestamp); err == nil {
+				forwardedFrom.OriginalTimestamp = parsedTime
+			}
+		}
+
+		messageDTO.ForwardedFrom = forwardedFrom
+	}
+
 	data, _ := json.MarshalIndent(messageDTO, "", "  ")
 	fmt.Println("[DEBUGXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX] CHECK REPLY TO MESSAGE messageDTO:", string(data))
 
@@ -319,6 +345,11 @@ func (s *notificationService) NotifyConversationCreated(userIDs []uuid.UUID, con
 // NotifyConversationUpdated แจ้งเตือนการอัปเดตการสนทนา
 func (s *notificationService) NotifyConversationUpdated(conversationID uuid.UUID, update interface{}) {
 	s.wsPort.BroadcastConversationUpdated(conversationID, update)
+}
+
+// NotifyConversationUpdatedToUser ส่ง conversation.update ไปยัง user คนใดคนหนึ่ง (personalized)
+func (s *notificationService) NotifyConversationUpdatedToUser(userID uuid.UUID, update interface{}) {
+	s.wsPort.BroadcastToUser(userID, "conversation.update", update)
 }
 
 // NotifyConversationDeleted แจ้งเตือนการลบการสนทนา

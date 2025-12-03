@@ -164,6 +164,10 @@ type MessageDTO struct {
 	ReplyToID      *uuid.UUID    `json:"reply_to_id,omitempty"`
 	ReplyToMessage *ReplyInfoDTO `json:"reply_to_message,omitempty"`
 
+	// ข้อมูลการ Forward
+	IsForwarded   bool               `json:"is_forwarded"`
+	ForwardedFrom *ForwardedFromDTO `json:"forwarded_from,omitempty"`
+
 	// ข้อมูลธุรกิจ
 	BusinessID *uuid.UUID `json:"business_id,omitempty"`
 	AdminID    *uuid.UUID `json:"admin_id,omitempty"`
@@ -258,4 +262,13 @@ type ReplyInfoDTO struct {
 	Content     string     `json:"content"`
 	SenderName  string     `json:"sender_name"`
 	SenderID    *uuid.UUID `json:"sender_id,omitempty"`
+}
+
+// ForwardedFromDTO ข้อมูลต้นทางของข้อความที่ถูก Forward
+type ForwardedFromDTO struct {
+	MessageID         string    `json:"message_id"`
+	SenderID          string    `json:"sender_id"`
+	SenderName        string    `json:"sender_name"`
+	ConversationID    string    `json:"conversation_id"`
+	OriginalTimestamp time.Time `json:"original_timestamp"`
 }

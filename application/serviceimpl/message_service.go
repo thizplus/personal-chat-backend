@@ -441,6 +441,18 @@ func (s *messageService) ForwardMessage(messageID, targetConversationID, userID 
 	}
 	if originalMsg.SenderID != nil {
 		forwardedFrom["sender_id"] = originalMsg.SenderID.String()
+
+		// ดึงข้อมูลผู้ส่งต้นฉบับเพื่อเอา sender_name
+		if s.userRepo != nil {
+			originalSender, err := s.userRepo.FindByID(*originalMsg.SenderID)
+			if err == nil && originalSender != nil {
+				senderName := originalSender.DisplayName
+				if senderName == "" {
+					senderName = originalSender.Username
+				}
+				forwardedFrom["sender_name"] = senderName
+			}
+		}
 	}
 
 	// สร้างข้อความใหม่
@@ -487,7 +499,10 @@ func (s *messageService) ForwardMessage(messageID, targetConversationID, userID 
 	} else {
 		lastMsgText += "[" + originalMsg.MessageType + "]"
 	}
-	_ = s.messageRepo.UpdateConversationLastMessage(targetConversationID, lastMsgText, now)
+	_ = s.messageRepo.UpdateConversationLastMessage(targetConversationID, lastMsgText, now, forwardedMsg.ID)
+
+	// ส่ง WebSocket event แจ้งการอัปเดต conversation พร้อม mention data
+	s.notifyConversationUpdated(targetConversationID, lastMsgText, now, forwardedMsg.ID)
 
 	return forwardedMsg, nil
 }
@@ -523,4 +538,63 @@ func (s *messageService) ForwardMessages(messageIDs []uuid.UUID, targetConversat
 	}
 
 	return results, nil
+}
+
+// notifyConversationUpdated ส่ง WebSocket event แจ้งการอัปเดต conversation พร้อม mention data
+// สำหรับแต่ละ member (personalized per user)
+func (s *messageService) notifyConversationUpdated(conversationID uuid.UUID, lastMessageText string, lastMessageAt time.Time, lastMessageID uuid.UUID) {
+	// ดึงรายชื่อสมาชิกทั้งหมดในการสนทนา
+	members, err := s.conversationRepo.GetMembers(conversationID)
+	if err != nil {
+		fmt.Printf("Error getting conversation members: %v\n", err)
+		return
+	}
+
+	// ส่ง notification ให้แต่ละ member พร้อมข้อมูล mention ที่เป็น personalized
+	for _, member := range members {
+		// คำนวณ mention data สำหรับ user นี้
+		var hasMention bool
+		var mentionCount int
+		var lastMessageHasMention bool
+
+		// 1. นับ unread mentions
+		if member.LastReadAt != nil {
+			mentionCount, _ = s.mentionRepo.CountUnreadMentionsByConversation(
+				conversationID,
+				member.UserID,
+				member.LastReadAt,
+			)
+		} else {
+			mentionCount, _ = s.mentionRepo.CountUnreadMentionsByConversation(
+				conversationID,
+				member.UserID,
+				nil,
+			)
+		}
+
+		if mentionCount > 0 {
+			hasMention = true
+		}
+
+		// 2. ตรวจสอบว่า last message มี mention หรือไม่
+		if lastMessageID != uuid.Nil {
+			lastMessageHasMention, _ = s.mentionRepo.CheckLastMessageHasMention(
+				lastMessageID,
+				member.UserID,
+			)
+		}
+
+		// สร้าง notification payload สำหรับ user นี้
+		updateData := map[string]interface{}{
+			"conversation_id":          conversationID.String(),
+			"last_message_text":        lastMessageText,
+			"last_message_at":          lastMessageAt.Format(time.RFC3339),
+			"has_unread_mention":       hasMention,
+			"unread_mention_count":     mentionCount,
+			"last_message_has_mention": lastMessageHasMention,
+		}
+
+		// ส่ง WebSocket event แบบ personalized ไปยัง user นี้
+		s.notificationService.NotifyConversationUpdatedToUser(member.UserID, updateData)
+	}
 }
