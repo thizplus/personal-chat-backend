@@ -195,12 +195,12 @@ func (h *UserHandler) UploadProfileImage(c *fiber.Ctx) error {
 		})
 	}
 
-	// ตรวจสอบขนาดไฟล์ (เช่น ไม่เกิน 5MB)
-	maxSize := 5 * 1024 * 1024 // 5MB
+	// ตรวจสอบขนาดไฟล์ (เช่น ไม่เกิน 100MB)
+	maxSize := 100 * 1024 * 1024 // 100MB
 	if file.Size > int64(maxSize) {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"success": false,
-			"message": "File too large (max 5MB)",
+			"message": "File too large (max 100MB)",
 		})
 	}
 

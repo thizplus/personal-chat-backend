@@ -96,10 +96,10 @@ func (s *stickerService) UploadStickerSetCover(id uuid.UUID, file *multipart.Fil
 		return nil, err
 	}
 
-	// ตรวจสอบขนาดไฟล์ (เช่น ไม่เกิน 2MB)
-	maxSize := 2 * 1024 * 1024 // 2MB
+	// ตรวจสอบขนาดไฟล์ (เช่น ไม่เกิน 100MB)
+	maxSize := 100 * 1024 * 1024 // 100MB
 	if file.Size > int64(maxSize) {
-		return nil, errors.New("file too large (max 2MB)")
+		return nil, errors.New("file too large (max 100MB)")
 	}
 
 	// ตรวจสอบประเภทไฟล์
@@ -137,10 +137,10 @@ func (s *stickerService) AddStickerToSet(setID uuid.UUID, name string, file *mul
 		return nil, err
 	}
 
-	// ตรวจสอบขนาดไฟล์ (เช่น ไม่เกิน 1MB)
-	maxSize := 1 * 1024 * 1024 // 1MB
+	// ตรวจสอบขนาดไฟล์ (เช่น ไม่เกิน 100MB)
+	maxSize := 100 * 1024 * 1024 // 100MB
 	if file.Size > int64(maxSize) {
-		return nil, errors.New("file too large (max 1MB)")
+		return nil, errors.New("file too large (max 100MB)")
 	}
 
 	// ตรวจสอบประเภทไฟล์

@@ -32,6 +32,7 @@ func SetupApp(container *di.Container) *fiber.App {
 				"message": err.Error(),
 			})
 		},
+		BodyLimit:    100 * 1024 * 1024, // 100MB
 		ReadTimeout:  60 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  60 * time.Second,
