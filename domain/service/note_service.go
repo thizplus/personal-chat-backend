@@ -9,9 +9,9 @@ import (
 // NoteService เป็น interface ที่กำหนดฟังก์ชันของ Note Service
 type NoteService interface {
 	// CRUD operations
-	CreateNote(userID uuid.UUID, conversationID *uuid.UUID, title, content string, tags []string) (*models.Note, error)
+	CreateNote(userID uuid.UUID, conversationID *uuid.UUID, title, content string, tags []string, visibility models.NoteVisibility) (*models.Note, error)
 	GetNote(id, userID uuid.UUID) (*models.Note, error)
-	UpdateNote(id, userID uuid.UUID, title, content string, tags []string) (*models.Note, error)
+	UpdateNote(id, userID uuid.UUID, title, content string, tags []string, visibility *models.NoteVisibility) (*models.Note, error)
 	DeleteNote(id, userID uuid.UUID) error
 
 	// Query operations

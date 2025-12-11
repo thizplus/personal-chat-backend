@@ -192,11 +192,12 @@ func NewContainer(db *gorm.DB, storageService service.FileStorageService, redisC
 		container.MessageMentionRepo,
 	)
 
-	// สร้าง ScheduledMessageService (ต้องสร้างหลัง MessageService)
+	// สร้าง ScheduledMessageService (ต้องสร้างหลัง MessageService และ NotificationService)
 	container.ScheduledMessageService = serviceimpl.NewScheduledMessageService(
 		container.ScheduledMessageRepo,
 		container.ConversationRepo,
 		container.MessageService,
+		container.NotificationService, // ✅ เพิ่มเพื่อส่ง WebSocket notification เมื่อส่งข้อความตั้งเวลา
 	)
 
 	// สร้าง handlers
@@ -213,7 +214,7 @@ func NewContainer(db *gorm.DB, storageService service.FileStorageService, redisC
 	container.SearchHandler = handler.NewSearchHandler(container.UserService, container.UserFriendshipService)
 	container.PresenceHandler = handler.NewPresenceHandler(container.PresenceService)
 	container.ScheduledMessageHandler = handler.NewScheduledMessageHandler(container.ScheduledMessageService)
-	container.NoteHandler = handler.NewNoteHandler(container.NoteService)
+	container.NoteHandler = handler.NewNoteHandler(container.NoteService, container.WebSocketPort)
 
 	// สร้าง background jobs
 	container.FileCleanupScheduler = scheduler.NewFileCleanupScheduler(
@@ -224,6 +225,10 @@ func NewContainer(db *gorm.DB, storageService service.FileStorageService, redisC
 	container.ScheduledMessageProcessor = scheduler.NewScheduledMessageProcessor(
 		container.ScheduledMessageService,
 	)
+
+	// เชื่อมต่อ processor กับ service สำหรับ precise timing
+	// (ต้องทำหลังจากสร้างทั้งสองแล้ว)
+	container.ScheduledMessageService.SetProcessor(container.ScheduledMessageProcessor)
 
 	return container, nil
 }

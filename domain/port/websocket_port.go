@@ -60,4 +60,9 @@ type WebSocketPort interface {
 	BroadcastNotification(userIDs []uuid.UUID, notification interface{})
 	BroadcastAlert(userID uuid.UUID, alert interface{})
 	BroadcastSystemMessage(userIDs []uuid.UUID, message interface{})
+
+	// Note notifications (broadcast to conversation members for shared notes)
+	BroadcastNoteCreated(conversationID uuid.UUID, note interface{})
+	BroadcastNoteUpdated(conversationID uuid.UUID, note interface{})
+	BroadcastNoteDeleted(conversationID uuid.UUID, noteID uuid.UUID, userID uuid.UUID)
 }

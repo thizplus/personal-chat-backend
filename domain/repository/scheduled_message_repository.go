@@ -18,6 +18,7 @@ type ScheduledMessageRepository interface {
 	// Query operations
 	FindByUserID(userID uuid.UUID, limit, offset int) ([]*models.ScheduledMessage, int64, error)
 	FindByConversationID(conversationID uuid.UUID, limit, offset int) ([]*models.ScheduledMessage, int64, error)
+	FindByConversationAndUser(conversationID, userID uuid.UUID, limit, offset int) ([]*models.ScheduledMessage, int64, error)
 	FindPendingMessages(beforeTime time.Time, limit int) ([]*models.ScheduledMessage, error)
 
 	// Status updates

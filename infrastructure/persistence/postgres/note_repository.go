@@ -160,19 +160,25 @@ func (r *noteRepository) FindByTag(userID uuid.UUID, tag string, limit, offset i
 }
 
 // FindByConversationID ดึงบันทึกที่เฉพาะเจาะจงกับ conversation
+// ดึงทั้ง:
+// 1. Notes ของตัวเอง (ทุก visibility)
+// 2. Notes ของคนอื่นที่ visibility = 'shared'
 func (r *noteRepository) FindByConversationID(userID, conversationID uuid.UUID, limit, offset int) ([]*models.Note, int64, error) {
 	var notes []*models.Note
 	var total int64
 
+	// Query condition: (เป็นของฉัน) OR (เป็นของคนอื่นและ shared)
+	condition := "conversation_id = ? AND (user_id = ? OR visibility = ?)"
+
 	// นับจำนวนทั้งหมด
 	if err := r.db.Model(&models.Note{}).
-		Where("user_id = ? AND conversation_id = ?", userID, conversationID).
+		Where(condition, conversationID, userID, models.NoteVisibilityShared).
 		Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
 	// ดึงข้อมูล โดยเรียง pinned ก่อน แล้วตาม updated_at
-	err := r.db.Where("user_id = ? AND conversation_id = ?", userID, conversationID).
+	err := r.db.Where(condition, conversationID, userID, models.NoteVisibilityShared).
 		Order("is_pinned DESC, updated_at DESC").
 		Limit(limit).
 		Offset(offset).

@@ -16,6 +16,7 @@ func SetupScheduledMessageRoutes(router fiber.Router, scheduledMessageHandler *h
 	// CRUD operations
 	scheduledMessages.Get("/", scheduledMessageHandler.GetUserScheduledMessages)                                           // ดึงรายการข้อความที่กำหนดเวลาส่งของผู้ใช้
 	scheduledMessages.Get("/:id", scheduledMessageHandler.GetScheduledMessage)                                              // ดึงข้อมูลข้อความที่กำหนดเวลาส่ง
+	scheduledMessages.Put("/:id", scheduledMessageHandler.UpdateScheduledTime)                                              // อัปเดตเวลาที่กำหนดส่ง
 	scheduledMessages.Delete("/:id", scheduledMessageHandler.CancelScheduledMessage)                                        // ยกเลิกข้อความที่กำหนดเวลาส่ง
 
 	// Schedule message in conversation

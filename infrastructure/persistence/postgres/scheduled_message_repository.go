@@ -111,6 +111,35 @@ func (r *scheduledMessageRepository) FindByConversationID(conversationID uuid.UU
 	return scheduledMsgs, total, nil
 }
 
+// FindByConversationAndUser ดึงรายการข้อความที่กำหนดเวลาส่งในการสนทนา เฉพาะของ user คนนั้น
+func (r *scheduledMessageRepository) FindByConversationAndUser(conversationID, userID uuid.UUID, limit, offset int) ([]*models.ScheduledMessage, int64, error) {
+	var scheduledMsgs []*models.ScheduledMessage
+	var total int64
+
+	// นับจำนวนทั้งหมด
+	if err := r.db.Model(&models.ScheduledMessage{}).
+		Where("conversation_id = ? AND sender_id = ?", conversationID, userID).
+		Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// ดึงข้อมูล
+	err := r.db.Preload("Conversation").
+		Preload("Sender").
+		Preload("Message").
+		Where("conversation_id = ? AND sender_id = ?", conversationID, userID).
+		Order("scheduled_at DESC").
+		Limit(limit).
+		Offset(offset).
+		Find(&scheduledMsgs).Error
+
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return scheduledMsgs, total, nil
+}
+
 // FindPendingMessages ดึงรายการข้อความที่ถึงเวลาส่งแล้ว
 func (r *scheduledMessageRepository) FindPendingMessages(beforeTime time.Time, limit int) ([]*models.ScheduledMessage, error) {
 	var scheduledMsgs []*models.ScheduledMessage

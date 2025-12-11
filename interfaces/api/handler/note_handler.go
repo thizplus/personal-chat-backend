@@ -5,6 +5,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/thizplus/gofiber-chat-api/domain/models"
+	"github.com/thizplus/gofiber-chat-api/domain/port"
 	"github.com/thizplus/gofiber-chat-api/domain/service"
 	"github.com/thizplus/gofiber-chat-api/interfaces/api/middleware"
 	"github.com/thizplus/gofiber-chat-api/pkg/utils"
@@ -12,11 +13,13 @@ import (
 
 type NoteHandler struct {
 	noteService service.NoteService
+	wsPort      port.WebSocketPort
 }
 
-func NewNoteHandler(noteService service.NoteService) *NoteHandler {
+func NewNoteHandler(noteService service.NoteService, wsPort port.WebSocketPort) *NoteHandler {
 	return &NoteHandler{
 		noteService: noteService,
+		wsPort:      wsPort,
 	}
 }
 
@@ -36,6 +39,7 @@ func (h *NoteHandler) CreateNote(c *fiber.Ctx) error {
 		Title          string   `json:"title"`
 		Content        string   `json:"content"`
 		Tags           []string `json:"tags"`
+		Visibility     string   `json:"visibility,omitempty"` // "private" (default) หรือ "shared"
 	}
 
 	if err := c.BodyParser(&input); err != nil {
@@ -58,8 +62,18 @@ func (h *NoteHandler) CreateNote(c *fiber.Ctx) error {
 		conversationIDPtr = &conversationUUID
 	}
 
+	// กำหนด visibility (default = private)
+	visibility := models.NoteVisibilityPrivate
+	if input.Visibility == "shared" {
+		// shared ใช้ได้เฉพาะ conversation notes
+		if conversationIDPtr != nil {
+			visibility = models.NoteVisibilityShared
+		}
+		// ถ้าไม่มี conversation_id แต่ระบุ shared → ใช้ private แทน
+	}
+
 	// สร้างบันทึก
-	note, err := h.noteService.CreateNote(userID, conversationIDPtr, input.Title, input.Content, input.Tags)
+	note, err := h.noteService.CreateNote(userID, conversationIDPtr, input.Title, input.Content, input.Tags, visibility)
 	if err != nil {
 		statusCode := fiber.StatusInternalServerError
 		if err.Error() == "user is not a member of this conversation" {
@@ -69,6 +83,11 @@ func (h *NoteHandler) CreateNote(c *fiber.Ctx) error {
 			"success": false,
 			"message": err.Error(),
 		})
+	}
+
+	// 🆕 Broadcast WebSocket event สำหรับ shared notes ใน conversation
+	if note.ConversationID != nil && note.Visibility == models.NoteVisibilityShared {
+		h.wsPort.BroadcastNoteCreated(*note.ConversationID, note)
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
@@ -216,9 +235,10 @@ func (h *NoteHandler) UpdateNote(c *fiber.Ctx) error {
 
 	// Parse request body
 	var input struct {
-		Title   string   `json:"title"`
-		Content string   `json:"content"`
-		Tags    []string `json:"tags"`
+		Title      string  `json:"title"`
+		Content    string  `json:"content"`
+		Tags       []string `json:"tags"`
+		Visibility *string `json:"visibility,omitempty"` // "private" หรือ "shared" (optional)
 	}
 
 	if err := c.BodyParser(&input); err != nil {
@@ -228,7 +248,16 @@ func (h *NoteHandler) UpdateNote(c *fiber.Ctx) error {
 		})
 	}
 
-	note, err := h.noteService.UpdateNote(noteID, userID, input.Title, input.Content, input.Tags)
+	// แปลง visibility
+	var visibility *models.NoteVisibility
+	if input.Visibility != nil {
+		v := models.NoteVisibility(*input.Visibility)
+		if v == models.NoteVisibilityPrivate || v == models.NoteVisibilityShared {
+			visibility = &v
+		}
+	}
+
+	note, err := h.noteService.UpdateNote(noteID, userID, input.Title, input.Content, input.Tags, visibility)
 	if err != nil {
 		statusCode := fiber.StatusInternalServerError
 		if err.Error() == "note not found" {
@@ -239,6 +268,11 @@ func (h *NoteHandler) UpdateNote(c *fiber.Ctx) error {
 			"success": false,
 			"message": err.Error(),
 		})
+	}
+
+	// 🆕 Broadcast WebSocket event สำหรับ shared notes ใน conversation
+	if note.ConversationID != nil && note.Visibility == models.NoteVisibilityShared {
+		h.wsPort.BroadcastNoteUpdated(*note.ConversationID, note)
 	}
 
 	return c.JSON(fiber.Map{
@@ -266,6 +300,9 @@ func (h *NoteHandler) DeleteNote(c *fiber.Ctx) error {
 		})
 	}
 
+	// 🆕 ดึงข้อมูล note ก่อนลบ เพื่อ broadcast หลังลบสำเร็จ
+	note, _ := h.noteService.GetNote(noteID, userID)
+
 	if err := h.noteService.DeleteNote(noteID, userID); err != nil {
 		statusCode := fiber.StatusInternalServerError
 		if err.Error() == "note not found" {
@@ -276,6 +313,11 @@ func (h *NoteHandler) DeleteNote(c *fiber.Ctx) error {
 			"success": false,
 			"message": err.Error(),
 		})
+	}
+
+	// 🆕 Broadcast WebSocket event สำหรับ shared notes ใน conversation
+	if note != nil && note.ConversationID != nil && note.Visibility == models.NoteVisibilityShared {
+		h.wsPort.BroadcastNoteDeleted(*note.ConversationID, noteID, userID)
 	}
 
 	return c.JSON(fiber.Map{

@@ -162,6 +162,11 @@ const (
 	// Notifications
 	TypeNotification MessageType = "notification"
 	TypeAlert        MessageType = "alert"
+
+	// Note events (broadcast to conversation members)
+	TypeNoteCreate MessageType = "note.create"
+	TypeNoteUpdate MessageType = "note.update"
+	TypeNoteDelete MessageType = "note.delete"
 )
 
 // WebSocket message structure

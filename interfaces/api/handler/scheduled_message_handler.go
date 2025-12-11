@@ -265,3 +265,70 @@ func (h *ScheduledMessageHandler) CancelScheduledMessage(c *fiber.Ctx) error {
 		"message": "Scheduled message cancelled successfully",
 	})
 }
+
+// UpdateScheduledTime อัปเดตเวลาที่กำหนดส่งข้อความ
+func (h *ScheduledMessageHandler) UpdateScheduledTime(c *fiber.Ctx) error {
+	userID, err := middleware.GetUserUUID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"success": false,
+			"message": "Unauthorized: " + err.Error(),
+		})
+	}
+
+	scheduledMsgID, err := utils.ParseUUIDParam(c, "id")
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"message": "Invalid scheduled message ID: " + err.Error(),
+		})
+	}
+
+	// Parse request body
+	var input struct {
+		ScheduledAt string `json:"scheduled_at"` // RFC3339 format
+	}
+
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"message": "Invalid request body: " + err.Error(),
+		})
+	}
+
+	// Parse scheduled_at
+	newScheduledAt, err := time.Parse(time.RFC3339, input.ScheduledAt)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"message": "Invalid scheduled_at format (use RFC3339): " + err.Error(),
+		})
+	}
+
+	// Update scheduled time
+	scheduledMsg, err := h.scheduledMessageService.UpdateScheduledTime(scheduledMsgID, userID, newScheduledAt)
+	if err != nil {
+		statusCode := fiber.StatusInternalServerError
+		switch err.Error() {
+		case "scheduled message not found":
+			statusCode = fiber.StatusNotFound
+		case "unauthorized to update this scheduled message":
+			statusCode = fiber.StatusForbidden
+		case "can only update pending scheduled messages":
+			statusCode = fiber.StatusBadRequest
+		case "scheduled_at must be in the future":
+			statusCode = fiber.StatusBadRequest
+		}
+
+		return c.Status(statusCode).JSON(fiber.Map{
+			"success": false,
+			"message": err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Scheduled time updated successfully",
+		"data":    scheduledMsg,
+	})
+}

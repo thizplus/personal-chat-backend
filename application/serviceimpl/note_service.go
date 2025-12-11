@@ -26,7 +26,7 @@ func NewNoteService(noteRepo repository.NoteRepository, conversationMemberRepo r
 }
 
 // CreateNote สร้างบันทึกใหม่
-func (s *noteService) CreateNote(userID uuid.UUID, conversationID *uuid.UUID, title, content string, tags []string) (*models.Note, error) {
+func (s *noteService) CreateNote(userID uuid.UUID, conversationID *uuid.UUID, title, content string, tags []string, visibility models.NoteVisibility) (*models.Note, error) {
 	// ถ้ามี conversation_id ให้ตรวจสอบว่าผู้ใช้เป็นสมาชิกของ conversation นั้น
 	if conversationID != nil {
 		member, err := s.conversationMemberRepo.GetByConversationAndUserID(*conversationID, userID)
@@ -50,6 +50,14 @@ func (s *noteService) CreateNote(userID uuid.UUID, conversationID *uuid.UUID, ti
 		tagsJSON = types.JSONB{}
 	}
 
+	// กำหนด visibility (shared ใช้ได้เฉพาะ conversation notes)
+	if visibility == "" {
+		visibility = models.NoteVisibilityPrivate
+	}
+	if conversationID == nil && visibility == models.NoteVisibilityShared {
+		visibility = models.NoteVisibilityPrivate // ไม่มี conversation → ต้องเป็น private
+	}
+
 	note := &models.Note{
 		ID:             uuid.New(),
 		UserID:         userID,
@@ -58,6 +66,7 @@ func (s *noteService) CreateNote(userID uuid.UUID, conversationID *uuid.UUID, ti
 		Content:        content,
 		Tags:           tagsJSON,
 		IsPinned:       false,
+		Visibility:     visibility,
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
 	}
@@ -83,7 +92,7 @@ func (s *noteService) GetNote(id, userID uuid.UUID) (*models.Note, error) {
 }
 
 // UpdateNote อัปเดตบันทึก
-func (s *noteService) UpdateNote(id, userID uuid.UUID, title, content string, tags []string) (*models.Note, error) {
+func (s *noteService) UpdateNote(id, userID uuid.UUID, title, content string, tags []string, visibility *models.NoteVisibility) (*models.Note, error) {
 	// ดึงบันทึกเดิม
 	note, err := s.noteRepo.GetByID(id, userID)
 	if err != nil {
@@ -107,6 +116,16 @@ func (s *noteService) UpdateNote(id, userID uuid.UUID, title, content string, ta
 			note.Tags = types.JSONB{"data": tagsArray}
 		} else {
 			note.Tags = types.JSONB{}
+		}
+	}
+
+	// อัปเดต visibility (ถ้ามีการส่งมา)
+	if visibility != nil {
+		// shared ใช้ได้เฉพาะ conversation notes
+		if note.ConversationID == nil && *visibility == models.NoteVisibilityShared {
+			// ไม่มี conversation → ไม่เปลี่ยนเป็น shared
+		} else {
+			note.Visibility = *visibility
 		}
 	}
 

@@ -37,7 +37,20 @@
       "Bash(powershell -Command \"Stop-Process -Id 7444 -Force\")",
       "Bash(\"C:\\Program Files\\PostgreSQL\\17\\bin\\psql.exe\" -h localhost -p 5432 -U postgres -d chat_db -f \"D:\\Admin\\Desktop\\MY PROJECT\\chat-backend-v2-main\\migrations\\004_add_fulltext_search.sql\")",
       "Bash(powershell -Command \"Stop-Process -Id 11364 -Force\")",
-      "Bash(powershell -Command:*)"
+      "Bash(powershell -Command:*)",
+      "Bash(\"C:\\Program Files\\PostgreSQL\\17\\bin\\psql.exe\" -h localhost -p 5432 -U postgres -d chat_db -f \"D:\\Admin\\Desktop\\MY PROJECT\\chat-backend-v2-main\\migrations\\010_add_last_message_id.sql\")",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"D:\\Admin\\Desktop\\MY PROJECT\\chat-backend-v2-main\\run_migration.ps1\")",
+      "Bash(where:*)",
+      "Bash(\"C:\\Program Files\\PostgreSQL\\17\\bin\\psql.exe\" -h localhost -p 5432 -U postgres -d chat_db -f \"migrations/010_add_last_message_id.sql\")",
+      "Bash(\"C:\\Program Files\\PostgreSQL\\17\\bin\\psql.exe\" -h localhost -p 5432 -U postgres -d chat_db -f \"migrations/011_add_mention_cascade_delete.sql\")",
+      "Bash(cmd.exe /c \"set PGPASSWORD=n147369 && \"\"C:\\Program Files\\PostgreSQL\\17\\bin\\psql.exe\"\" -h localhost -p 5432 -U postgres -d chat_db -f \"\"D:\\Admin\\Desktop\\MY PROJECT\\chat-backend-v2-main\\migrations\\010_add_last_message_id.sql\"\"\")",
+      "Bash(cmd.exe /c \"set PGPASSWORD=n147369 && \"\"C:\\Program Files\\PostgreSQL\\17\\bin\\psql.exe\"\" -h localhost -p 5432 -U postgres -d chat_db -f \"\"migrations\\010_add_last_message_id.sql\"\" 2>&1\")",
+      "Bash(powershell -ExecutionPolicy Bypass -Command \"$env:PGPASSWORD = ''n147369''; & ''C:\\Program Files\\PostgreSQL\\17\\bin\\psql.exe'' -h localhost -p 5432 -U postgres -d chat_db -f ''migrations\\010_add_last_message_id.sql''\")",
+      "Bash(cmd.exe /c run_migrations.bat)",
+      "Bash(./run_migrations.bat)",
+      "Bash(dir migrations010_add_last_message_id.sql)",
+      "Bash(dir:*)",
+      "Bash(go run:*)"
     ],
     "deny": [],
     "ask": []

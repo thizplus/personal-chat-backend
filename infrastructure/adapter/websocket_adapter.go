@@ -336,3 +336,24 @@ func (a *WebSocketAdapter) BroadcastProfileUpdateTags(businessID uuid.UUID, user
 	// ส่งข้อมูลไปยังทุกคนในธุรกิจ
 	a.BroadcastToBusiness(businessID, "profile.tag_update", payload)
 }
+
+// =========== Note Notifications ===========
+
+// BroadcastNoteCreated ส่งการแจ้งเตือน note ใหม่ไปยังสมาชิกใน conversation
+func (a *WebSocketAdapter) BroadcastNoteCreated(conversationID uuid.UUID, note interface{}) {
+	a.BroadcastToConversation(conversationID, "note.create", note)
+}
+
+// BroadcastNoteUpdated ส่งการแจ้งเตือน note ถูกอัปเดตไปยังสมาชิกใน conversation
+func (a *WebSocketAdapter) BroadcastNoteUpdated(conversationID uuid.UUID, note interface{}) {
+	a.BroadcastToConversation(conversationID, "note.update", note)
+}
+
+// BroadcastNoteDeleted ส่งการแจ้งเตือน note ถูกลบไปยังสมาชิกใน conversation
+func (a *WebSocketAdapter) BroadcastNoteDeleted(conversationID uuid.UUID, noteID uuid.UUID, userID uuid.UUID) {
+	a.BroadcastToConversation(conversationID, "note.delete", map[string]interface{}{
+		"note_id":         noteID.String(),
+		"conversation_id": conversationID.String(),
+		"deleted_by":      userID.String(),
+	})
+}
