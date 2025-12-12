@@ -234,7 +234,7 @@ func (h *MessageReadHandler) MarkAllMessagesAsRead(c *fiber.Ctx) error {
 
 		// 2. ✅ ส่ง message.read event ไปหาผู้ส่งแต่ละข้อความ
 		// เพื่อให้ Direct Chat และ Group Chat แสดง read receipt ถูกต้อง
-		notifiedSenders := make(map[uuid.UUID]bool)
+		// ต้องส่งทุก message_id เพื่อให้ frontend update ทุกข้อความ
 
 		for _, msgID := range unreadMessageIDs {
 			// ดึงข้อมูลข้อความ
@@ -250,27 +250,21 @@ func (h *MessageReadHandler) MarkAllMessagesAsRead(c *fiber.Ctx) error {
 
 			senderID := *message.SenderID
 
-			// ถ้ายังไม่ได้ส่ง event ไปหา sender คนนี้
-			if !notifiedSenders[senderID] {
-				// ดึง read count ของข้อความนี้
-				reads, _ := h.messageReadService.GetMessageReads(msgID, userUUID)
-				readCount := 1
-				if len(reads) > 0 {
-					readCount = len(reads)
-				}
-
-				// ส่ง message.read event ไปหาผู้ส่ง
-				h.notificationService.NotifyMessageReadToSender(senderID, map[string]interface{}{
-					"message_id":      msgID.String(),
-					"user_id":         userUUID.String(),
-					"conversation_id": conversationUUID.String(),
-					"read_at":         time.Now(),
-					"read_count":      readCount,
-				})
-
-				// ทำเครื่องหมายว่าส่งไปแล้ว
-				notifiedSenders[senderID] = true
+			// ดึง read count ของข้อความนี้
+			reads, _ := h.messageReadService.GetMessageReads(msgID, userUUID)
+			readCount := 1
+			if len(reads) > 0 {
+				readCount = len(reads)
 			}
+
+			// ส่ง message.read event ไปหาผู้ส่งสำหรับแต่ละข้อความ
+			h.notificationService.NotifyMessageReadToSender(senderID, map[string]interface{}{
+				"message_id":      msgID.String(),
+				"user_id":         userUUID.String(),
+				"conversation_id": conversationUUID.String(),
+				"read_at":         time.Now(),
+				"read_count":      readCount,
+			})
 		}
 	}
 
