@@ -35,6 +35,7 @@ type Container struct {
 	GroupActivityRepo          repository.GroupActivityRepository
 	ScheduledMessageRepo       repository.ScheduledMessageRepository
 	NoteRepo                   repository.NoteRepository
+	PinnedMessageRepo          repository.PinnedMessageRepository
 
 	// WebSocket Components
 	WebSocketHub  *websocket.Hub
@@ -55,6 +56,7 @@ type Container struct {
 	GroupActivityService          service.GroupActivityService
 	ScheduledMessageService       service.ScheduledMessageService
 	NoteService                   service.NoteService
+	PinnedMessageService          service.PinnedMessageService
 
 	// Handlers
 	AuthHandler                   *handler.AuthHandler
@@ -71,6 +73,7 @@ type Container struct {
 	PresenceHandler               *handler.PresenceHandler
 	ScheduledMessageHandler       *handler.ScheduledMessageHandler
 	NoteHandler                   *handler.NoteHandler
+	PinnedMessageHandler          *handler.PinnedMessageHandler
 
 	// Scheduler & Background Jobs
 	RedisClient                    *redis.Client
@@ -100,6 +103,7 @@ func NewContainer(db *gorm.DB, storageService service.FileStorageService, redisC
 	container.GroupActivityRepo = postgres.NewGroupActivityRepository(db)
 	container.ScheduledMessageRepo = postgres.NewScheduledMessageRepository(db)
 	container.NoteRepo = postgres.NewNoteRepository(db)
+	container.PinnedMessageRepo = postgres.NewPinnedMessageRepository(db)
 
 	log.Println("เชื่อมต่อกับบริการจัดเก็บไฟล์สำเร็จ")
 
@@ -164,6 +168,14 @@ func NewContainer(db *gorm.DB, storageService service.FileStorageService, redisC
 	// สร้าง WebSocketAdapter
 	container.WebSocketPort = adapter.NewWebSocketAdapter(container.WebSocketHub)
 
+	// สร้าง PinnedMessageService (หลังจาก WebSocketPort เพื่อให้ส่ง realtime events ได้)
+	container.PinnedMessageService = serviceimpl.NewPinnedMessageService(
+		container.PinnedMessageRepo,
+		container.MessageRepo,
+		container.ConversationRepo,
+		container.WebSocketPort,
+	)
+
 	// สร้าง NotificationService
 	container.NotificationService = serviceimpl.NewNotificationService(
 		container.WebSocketPort,
@@ -215,6 +227,7 @@ func NewContainer(db *gorm.DB, storageService service.FileStorageService, redisC
 	container.PresenceHandler = handler.NewPresenceHandler(container.PresenceService)
 	container.ScheduledMessageHandler = handler.NewScheduledMessageHandler(container.ScheduledMessageService)
 	container.NoteHandler = handler.NewNoteHandler(container.NoteService, container.WebSocketPort)
+	container.PinnedMessageHandler = handler.NewPinnedMessageHandler(container.PinnedMessageService)
 
 	// สร้าง background jobs
 	container.FileCleanupScheduler = scheduler.NewFileCleanupScheduler(

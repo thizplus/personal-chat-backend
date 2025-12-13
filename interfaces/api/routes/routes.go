@@ -27,6 +27,7 @@ func SetupRoutes(
 
 	searchHandler *handler.SearchHandler,
 	presenceHandler *handler.PresenceHandler,
+	pinnedMessageHandler *handler.PinnedMessageHandler,
 
 ) {
 	// สร้าง API group
@@ -61,5 +62,6 @@ func SetupRoutes(
 
 	SetupSearchRoutes(api, searchHandler)
 	SetupPresenceRoutes(api, presenceHandler)
+	SetupPinnedMessageRoutes(api, pinnedMessageHandler)
 
 }

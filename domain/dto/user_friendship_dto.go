@@ -31,7 +31,8 @@ type SearchUsersRequest struct {
 
 // SendFriendRequestParam สำหรับพารามิเตอร์การส่งคำขอเป็นเพื่อน
 type SendFriendRequestParam struct {
-	FriendID uuid.UUID `json:"friend_id" validate:"required"`
+	FriendID       uuid.UUID `json:"friend_id" validate:"required"`
+	InitialMessage *string   `json:"initial_message,omitempty"` // ข้อความแรกที่ส่งพร้อมคำขอ (Message Request feature)
 }
 
 // FriendRequestParam สำหรับพารามิเตอร์การจัดการคำขอเป็นเพื่อน
@@ -48,12 +49,14 @@ type BlockUserParam struct {
 
 // FriendshipData ข้อมูลความสัมพันธ์
 type FriendshipData struct {
-	ID          uuid.UUID        `json:"id"`
-	UserID      uuid.UUID        `json:"user_id"`
-	FriendID    uuid.UUID        `json:"friend_id"`
-	Status      FriendshipStatus `json:"status"`
-	RequestedAt time.Time        `json:"requested_at"`
-	UpdatedAt   time.Time        `json:"updated_at"`
+	ID               uuid.UUID        `json:"id"`
+	UserID           uuid.UUID        `json:"user_id"`
+	FriendID         uuid.UUID        `json:"friend_id"`
+	Status           FriendshipStatus `json:"status"`
+	RequestedAt      time.Time        `json:"requested_at"`
+	UpdatedAt        time.Time        `json:"updated_at"`
+	InitialMessage   *string          `json:"initial_message,omitempty"`
+	InitialMessageAt *time.Time       `json:"initial_message_at,omitempty"`
 }
 
 // FriendItem ข้อมูลเพื่อน
@@ -83,12 +86,14 @@ type FriendSearchResultItem struct {
 
 // PendingRequestItem ข้อมูลคำขอเป็นเพื่อนที่รออยู่
 type PendingRequestItem struct {
-	RequestID       uuid.UUID `json:"request_id"`
-	UserID          uuid.UUID `json:"user_id"`
-	Username        string    `json:"username"`
-	DisplayName     string    `json:"display_name"`
-	ProfileImageURL string    `json:"profile_image_url,omitempty"`
-	RequestedAt     time.Time `json:"requested_at"`
+	RequestID        uuid.UUID  `json:"request_id"`
+	UserID           uuid.UUID  `json:"user_id"`
+	Username         string     `json:"username"`
+	DisplayName      string     `json:"display_name"`
+	ProfileImageURL  string     `json:"profile_image_url,omitempty"`
+	RequestedAt      time.Time  `json:"requested_at"`
+	InitialMessage   *string    `json:"initial_message,omitempty"`
+	InitialMessageAt *time.Time `json:"initial_message_at,omitempty"`
 }
 
 // BlockedUserItem ข้อมูลผู้ใช้ที่ถูกบล็อก

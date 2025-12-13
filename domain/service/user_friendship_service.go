@@ -9,6 +9,7 @@ import (
 type UserFriendshipService interface {
 	// ฟีเจอร์หลักของระบบเพื่อน
 	SendFriendRequest(userID, friendID uuid.UUID) (*models.UserFriendship, error)
+	SendFriendRequestWithMessage(userID, friendID uuid.UUID, initialMessage *string) (*models.UserFriendship, error) // Message Request feature
 	AcceptFriendRequest(requestID, userID uuid.UUID) (*models.UserFriendship, error)
 	RejectFriendRequest(requestID, userID uuid.UUID) (*models.UserFriendship, error)
 	CancelFriendRequest(requestID, userID uuid.UUID) error

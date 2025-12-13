@@ -172,6 +172,11 @@ func (h *UserFriendshipHandler) SearchUsers(c *fiber.Ctx) error {
 	})
 }
 
+// sendFriendRequestBody สำหรับรับ initial message จาก body
+type sendFriendRequestBody struct {
+	InitialMessage *string `json:"initial_message,omitempty"`
+}
+
 // SendFriendRequest ส่งคำขอเป็นเพื่อน
 func (h *UserFriendshipHandler) SendFriendRequest(c *fiber.Ctx) error {
 	// ดึง User ID จาก token
@@ -188,8 +193,12 @@ func (h *UserFriendshipHandler) SendFriendRequest(c *fiber.Ctx) error {
 		return err // error response ถูกจัดการในฟังก์ชันแล้ว
 	}
 
-	// ส่งคำขอเป็นเพื่อน
-	friendship, err := h.userFriendshipService.SendFriendRequest(userID, friendID)
+	// Parse request body สำหรับ initial message (optional)
+	var body sendFriendRequestBody
+	_ = c.BodyParser(&body) // ไม่ต้อง error ถ้าไม่มี body
+
+	// ส่งคำขอเป็นเพื่อนพร้อมข้อความ (ถ้ามี)
+	friendship, err := h.userFriendshipService.SendFriendRequestWithMessage(userID, friendID, body.InitialMessage)
 	if err != nil {
 		if strings.Contains(err.Error(), "friend request already exists") {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -209,17 +218,25 @@ func (h *UserFriendshipHandler) SendFriendRequest(c *fiber.Ctx) error {
 		// บันทึก log แต่ไม่ส่ง error กลับไป
 	}
 
+	responseData := types.JSONB{
+		"id":           friendship.ID.String(),
+		"user_id":      friendship.UserID.String(),
+		"friend_id":    friendship.FriendID.String(),
+		"status":       friendship.Status,
+		"requested_at": friendship.RequestedAt,
+		"updated_at":   friendship.UpdatedAt,
+	}
+
+	// เพิ่ม initial_message ใน response ถ้ามี
+	if friendship.InitialMessage != nil {
+		responseData["initial_message"] = *friendship.InitialMessage
+		responseData["initial_message_at"] = friendship.InitialMessageAt
+	}
+
 	return c.JSON(fiber.Map{
 		"success": true,
 		"message": "Friend request sent successfully",
-		"data": types.JSONB{
-			"id":           friendship.ID.String(),
-			"user_id":      friendship.UserID.String(),
-			"friend_id":    friendship.FriendID.String(),
-			"status":       friendship.Status,
-			"requested_at": friendship.RequestedAt,
-			"updated_at":   friendship.UpdatedAt,
-		},
+		"data":    responseData,
 	})
 }
 
@@ -260,6 +277,12 @@ func (h *UserFriendshipHandler) GetPendingRequests(c *fiber.Ctx) error {
 			"display_name":      requester.DisplayName,
 			"profile_image_url": requester.ProfileImageURL,
 			"requested_at":      request.RequestedAt,
+		}
+
+		// เพิ่ม initial_message ถ้ามี (Message Request feature)
+		if request.InitialMessage != nil {
+			requestData["initial_message"] = *request.InitialMessage
+			requestData["initial_message_at"] = request.InitialMessageAt
 		}
 
 		responseData = append(responseData, requestData)

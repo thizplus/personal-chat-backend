@@ -363,3 +363,20 @@ func (a *WebSocketAdapter) BroadcastNoteDeleted(conversationID uuid.UUID, noteID
 		"deleted_by":      userID.String(),
 	})
 }
+
+// =========== Pinned Message Notifications ===========
+
+// BroadcastMessagePinned ส่งการแจ้งเตือน message ถูกปักหมุด (public) ไปยังสมาชิกใน conversation
+func (a *WebSocketAdapter) BroadcastMessagePinned(conversationID uuid.UUID, pinnedMessage interface{}) {
+	a.BroadcastToConversation(conversationID, "message.pinned", pinnedMessage)
+}
+
+// BroadcastMessageUnpinned ส่งการแจ้งเตือน message ถูกยกเลิกปักหมุด (public) ไปยังสมาชิกใน conversation
+func (a *WebSocketAdapter) BroadcastMessageUnpinned(conversationID uuid.UUID, messageID uuid.UUID, userID uuid.UUID) {
+	a.BroadcastToConversation(conversationID, "message.unpinned", map[string]interface{}{
+		"message_id":      messageID.String(),
+		"conversation_id": conversationID.String(),
+		"unpinned_by":     userID.String(),
+		"unpinned_at":     utils.Now(),
+	})
+}

@@ -29,6 +29,11 @@ func NewUserFriendshipService(
 
 // SendFriendRequest ส่งคำขอเป็นเพื่อน
 func (s *userFriendshipService) SendFriendRequest(userID, friendID uuid.UUID) (*models.UserFriendship, error) {
+	return s.SendFriendRequestWithMessage(userID, friendID, nil)
+}
+
+// SendFriendRequestWithMessage ส่งคำขอเป็นเพื่อนพร้อมข้อความ (Message Request feature)
+func (s *userFriendshipService) SendFriendRequestWithMessage(userID, friendID uuid.UUID, initialMessage *string) (*models.UserFriendship, error) {
 	// ตรวจสอบว่าไม่ได้ส่งคำขอเป็นเพื่อนกับตัวเอง
 	if userID == friendID {
 		return nil, errors.New("cannot send friend request to yourself")
@@ -67,6 +72,12 @@ func (s *userFriendshipService) SendFriendRequest(userID, friendID uuid.UUID) (*
 			rejectedFriendship.RequestedAt = now
 			rejectedFriendship.UpdatedAt = now
 
+			// เพิ่ม initial message ถ้ามี
+			if initialMessage != nil && *initialMessage != "" {
+				rejectedFriendship.InitialMessage = initialMessage
+				rejectedFriendship.InitialMessageAt = &now
+			}
+
 			// ถ้าทิศทางความสัมพันธ์เดิมเป็น เพื่อน -> ผู้ใช้ปัจจุบัน ให้สลับทิศทาง
 			if rejectedFriendship.UserID != userID {
 				rejectedFriendship.UserID = userID
@@ -83,7 +94,6 @@ func (s *userFriendshipService) SendFriendRequest(userID, friendID uuid.UUID) (*
 	}
 
 	// สร้างคำขอเป็นเพื่อนใหม่
-
 	now := time.Now()
 
 	friendship := &models.UserFriendship{
@@ -93,6 +103,12 @@ func (s *userFriendshipService) SendFriendRequest(userID, friendID uuid.UUID) (*
 		Status:      "pending",
 		RequestedAt: now,
 		UpdatedAt:   now,
+	}
+
+	// เพิ่ม initial message ถ้ามี
+	if initialMessage != nil && *initialMessage != "" {
+		friendship.InitialMessage = initialMessage
+		friendship.InitialMessageAt = &now
 	}
 
 	err = s.userFriendshipRepo.Create(friendship)

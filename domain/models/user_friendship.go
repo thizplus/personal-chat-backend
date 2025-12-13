@@ -17,6 +17,10 @@ type UserFriendship struct {
 	RequestedAt time.Time `json:"requested_at" gorm:"type:timestamp with time zone;default:now()"`
 	UpdatedAt   time.Time `json:"updated_at" gorm:"type:timestamp with time zone;default:now()"`
 
+	// Initial message sent with friend request (Message Request feature)
+	InitialMessage   *string    `json:"initial_message,omitempty" gorm:"type:text"`
+	InitialMessageAt *time.Time `json:"initial_message_at,omitempty" gorm:"type:timestamp with time zone"`
+
 	// Associations
 	User   *User `json:"user,omitempty" gorm:"foreignkey:UserID"`
 	Friend *User `json:"friend,omitempty" gorm:"foreignkey:FriendID"`

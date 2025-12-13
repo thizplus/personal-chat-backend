@@ -42,6 +42,7 @@ func RunMigration(db *gorm.DB) error {
 		&models.ScheduledMessage{},
 		&models.Note{},
 		&models.GroupActivity{},
+		&models.PinnedMessage{},
 	)
 
 	if err != nil {

@@ -65,4 +65,8 @@ type WebSocketPort interface {
 	BroadcastNoteCreated(conversationID uuid.UUID, note interface{})
 	BroadcastNoteUpdated(conversationID uuid.UUID, note interface{})
 	BroadcastNoteDeleted(conversationID uuid.UUID, noteID uuid.UUID, userID uuid.UUID)
+
+	// Pinned message notifications (for public pins)
+	BroadcastMessagePinned(conversationID uuid.UUID, pinnedMessage interface{})
+	BroadcastMessageUnpinned(conversationID uuid.UUID, messageID uuid.UUID, userID uuid.UUID)
 }
